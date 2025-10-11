@@ -1,0 +1,63 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// User model for authentication
+model User {
+  id              String   @id @default(cuid())
+  email           String   @unique
+  password        String
+  firstName       String?
+  lastName        String?
+  avatar          String?
+  role            UserRole @default(CUSTOMER)
+  isActive        Boolean  @default(true)
+  isEmailVerified Boolean  @default(false)
+  lastLoginAt     DateTime?
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  // Relations
+  otpCodes Otp[]
+
+  @@map("users")
+}
+
+// User roles
+enum UserRole {
+  ADMIN
+  CUSTOMER
+}
+
+// OTP model for verification codes
+model Otp {
+  id        String   @id @default(cuid())
+  code      String
+  expiresAt DateTime
+  isUsed    Boolean  @default(false)
+  type      OtpType  @default(LOGIN)
+  createdAt DateTime @default(now())
+
+  // Relations
+  userId String
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([code])
+  @@map("otps")
+}
+
+// OTP types
+enum OtpType {
+  LOGIN
+  VERIFICATION
+  PASSWORD_RESET
+}
