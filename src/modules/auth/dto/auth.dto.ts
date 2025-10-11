@@ -118,6 +118,9 @@ export class AuthResponseDto {
   access_token: string;
 
   @ApiProperty()
+  refresh_token: string;
+
+  @ApiProperty()
   user: {
     id: string;
     email: string;
@@ -126,6 +129,20 @@ export class AuthResponseDto {
     role: string;
     isEmailVerified: boolean;
   };
+}
+
+export class RefreshTokenDto {
+  @ApiProperty({ example: 'your-refresh-token-here' })
+  @IsString()
+  refresh_token: string;
+}
+
+export class RefreshTokenResponseDto {
+  @ApiProperty()
+  access_token: string;
+
+  @ApiProperty()
+  refresh_token: string;
 }
 
 export class MessageResponseDto {

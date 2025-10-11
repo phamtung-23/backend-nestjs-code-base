@@ -32,10 +32,39 @@ export class AuthService {
     return null;
   }
 
-  login(user: User) {
+  async login(user: User, userAgent?: string, ipAddress?: string) {
     const payload = { email: user.email, sub: user.id, role: user.role };
+    
+    // Generate access token (short-lived: 15 minutes)
+    const accessToken = this.jwtService.sign(payload, {
+      expiresIn: '1d',
+    });
+
+    // Generate refresh token (long-lived: 7 days)
+    const refreshTokenString = this.jwtService.sign(
+      { sub: user.id, type: 'refresh' },
+      {
+        expiresIn: '7d',
+      },
+    );
+
+    // Store refresh token in database
+    const expiresAt = new Date();
+    expiresAt.setDate(expiresAt.getDate() + 7); // 7 days from now
+
+    await this.prisma.refreshToken.create({
+      data: {
+        token: refreshTokenString,
+        userId: user.id,
+        expiresAt,
+        userAgent,
+        ipAddress,
+      },
+    });
+
     return {
-      access_token: this.jwtService.sign(payload),
+      access_token: accessToken,
+      refresh_token: refreshTokenString,
       user: {
         id: user.id,
         email: user.email,
@@ -335,7 +364,12 @@ export class AuthService {
     return { message: 'OTP sent successfully' };
   }
 
-  async verifyOtp(email: string, otpCode: string) {
+  async verifyOtp(
+    email: string,
+    otpCode: string,
+    userAgent?: string,
+    ipAddress?: string,
+  ) {
     const user = await this.prisma.user.findUnique({
       where: { email },
     });
@@ -372,7 +406,7 @@ export class AuthService {
       data: { lastLoginAt: new Date() },
     });
 
-    return this.login(user);
+    return this.login(user, userAgent, ipAddress);
   }
 
   // Clean up expired OTPs (can be called periodically)
@@ -410,5 +444,132 @@ export class AuthService {
     // eslint-disable-next-line @typescript-eslint/no-unused-vars
     const { password: _, ...result } = user;
     return result;
+  }
+
+  async refreshAccessToken(
+    refreshToken: string,
+    userAgent?: string,
+    ipAddress?: string,
+  ) {
+    // Verify refresh token JWT signature
+    let payload: any;
+    try {
+      payload = this.jwtService.verify(refreshToken);
+    } catch (error) {
+      throw new UnauthorizedException('Invalid or expired refresh token');
+    }
+
+    // Check if refresh token exists in database and is valid
+    const storedToken = await this.prisma.refreshToken.findUnique({
+      where: { token: refreshToken },
+      include: { user: true },
+    });
+
+    if (!storedToken) {
+      throw new UnauthorizedException('Refresh token not found');
+    }
+
+    if (storedToken.isRevoked) {
+      throw new UnauthorizedException('Refresh token has been revoked');
+    }
+
+    if (storedToken.expiresAt < new Date()) {
+      throw new UnauthorizedException('Refresh token has expired');
+    }
+
+    // Generate new access token
+    const accessTokenPayload = {
+      email: storedToken.user.email,
+      sub: storedToken.user.id,
+      role: storedToken.user.role,
+    };
+
+    const newAccessToken = this.jwtService.sign(accessTokenPayload, {
+      expiresIn: '1d',
+    });
+
+    // Optionally: Generate new refresh token (rotation)
+    const newRefreshToken = this.jwtService.sign(
+      { sub: storedToken.user.id, type: 'refresh' },
+      {
+        expiresIn: '7d',
+      },
+    );
+
+    // Revoke old refresh token
+    await this.prisma.refreshToken.update({
+      where: { id: storedToken.id },
+      data: { isRevoked: true },
+    });
+
+    // Store new refresh token
+    const expiresAt = new Date();
+    expiresAt.setDate(expiresAt.getDate() + 7);
+
+    await this.prisma.refreshToken.create({
+      data: {
+        token: newRefreshToken,
+        userId: storedToken.user.id,
+        expiresAt,
+        userAgent,
+        ipAddress,
+      },
+    });
+
+    return {
+      access_token: newAccessToken,
+      refresh_token: newRefreshToken,
+    };
+  }
+
+  async revokeRefreshToken(refreshToken: string) {
+    const storedToken = await this.prisma.refreshToken.findUnique({
+      where: { token: refreshToken },
+    });
+
+    if (!storedToken) {
+      throw new NotFoundException('Refresh token not found');
+    }
+
+    await this.prisma.refreshToken.update({
+      where: { id: storedToken.id },
+      data: { isRevoked: true },
+    });
+
+    return { message: 'Refresh token revoked successfully' };
+  }
+
+  async revokeAllUserRefreshTokens(userId: string) {
+    await this.prisma.refreshToken.updateMany({
+      where: {
+        userId,
+        isRevoked: false,
+      },
+      data: { isRevoked: true },
+    });
+
+    return { message: 'All refresh tokens revoked successfully' };
+  }
+
+  async cleanupExpiredRefreshTokens() {
+    const deleted = await this.prisma.refreshToken.deleteMany({
+      where: {
+        OR: [
+          {
+            expiresAt: {
+              lt: new Date(),
+            },
+          },
+          {
+            isRevoked: true,
+            createdAt: {
+              lt: new Date(Date.now() - 2592000000), // older than 30 days
+            },
+          },
+        ],
+      },
+    });
+
+    return { message: `Cleaned up ${deleted.count} expired refresh tokens` };
   }
 }

@@ -6,13 +6,15 @@ A comprehensive **NestJS** authentication and user management system, ready to b
 
 ### Authentication & Security
 
-- ✅ **User Registration** with email verification
-- ✅ **Login** with JWT authentication
+- ✅ **User Registration** with OTP email verification
+- ✅ **Login** with JWT dual-token authentication
+- ✅ **Refresh Token Mechanism** with rotation and revocation
 - ✅ **Password Management** (forgot password, reset password, change password)
-- ✅ **OTP Authentication** (separate OTP table for better management)
-- ✅ **Email Verification** with token
+- ✅ **OTP Authentication** (separate OTP table for all verification needs)
+- ✅ **Multi-device Session Management** (logout from all devices)
 - ✅ **Rate Limiting** for security-sensitive endpoints
 - ✅ **Role-based Access Control** (Admin, Customer)
+- ✅ **Device Tracking** (user agent, IP address)
 
 ### Technical Features
 
@@ -50,13 +52,21 @@ A comprehensive **NestJS** authentication and user management system, ready to b
 - Timestamps (createdAt, updatedAt)
 
 ### OTP Model (All verification codes in one place)
-
 - OTP code (6 digits)
 - Expiration time (10 minutes)
 - Usage status (isUsed)
 - Type (LOGIN, VERIFICATION, PASSWORD_RESET)
 - User relation with cascade delete
 - Indexed for fast lookups (userId, code)
+
+### RefreshToken Model (JWT refresh mechanism)
+- JWT refresh token string
+- Expiration time (7 days)
+- Revocation status (isRevoked)
+- Device tracking (userAgent, ipAddress)
+- User relation with cascade delete
+- Indexed for fast lookups (userId, token)
+- Supports token rotation for enhanced security
 
 ## 📦 Installation
 
@@ -262,6 +272,35 @@ GET /api/v1/auth/profile
 Authorization: Bearer <your-jwt-token>
 ```
 
+#### Refresh Access Token
+
+```http
+POST /api/v1/auth/refresh-token
+Content-Type: application/json
+
+{
+  "refresh_token": "your-refresh-token-here"
+}
+```
+
+#### Logout (Revoke Refresh Token)
+
+```http
+POST /api/v1/auth/logout
+Content-Type: application/json
+
+{
+  "refresh_token": "your-refresh-token-here"
+}
+```
+
+#### Logout from All Devices (Protected)
+
+```http
+POST /api/v1/auth/logout-all
+Authorization: Bearer <your-jwt-token>
+```
+
 ## 🔒 Password Requirements
 
 Passwords must:
@@ -274,7 +313,10 @@ Passwords must:
 ## 🛡️ Security Features
 
 - **Bcrypt** password hashing (10 salt rounds)
-- **JWT** tokens with expiration (7 days default)
+- **JWT Authentication** with dual-token system:
+  - **Access Token**: Short-lived (15 minutes) for API requests
+  - **Refresh Token**: Long-lived (7 days) for token renewal
+  - **Token Rotation**: New refresh token issued on each refresh
 - **Rate Limiting** on sensitive endpoints:
   - Login: 5 attempts per minute
   - Forgot Password: 3 attempts per minute
@@ -285,7 +327,12 @@ Passwords must:
   - Login: 6-digit OTP (10 minutes expiry)
 - **One-time use codes**: OTPs marked as used after verification
 - **Auto-invalidation**: New OTP invalidates previous unused ones
-- **Automatic cleanup**: Method to remove expired/used OTPs
+- **Refresh Token Security**:
+  - Stored in database with expiration
+  - Can be revoked individually or all at once
+  - Device tracking (user agent, IP address)
+  - Token rotation on each refresh
+- **Automatic cleanup**: Methods to remove expired tokens and OTPs
 
 ## 📖 API Documentation
 
@@ -399,16 +446,19 @@ This codebase follows:
 
 Potential features to add:
 
-- [ ] Refresh token mechanism
-- [ ] Social authentication (Google, Facebook)
-- [ ] Two-factor authentication (2FA)
-- [ ] User profile management endpoints
+- [x] ~~Refresh token mechanism~~ ✅ **Implemented!**
+- [ ] Social authentication (Google, Facebook, GitHub)
+- [ ] Two-factor authentication (2FA with TOTP)
+- [ ] User profile management endpoints (update profile, avatar upload)
 - [ ] Admin panel for user management
-- [ ] Audit logging
-- [ ] File upload (avatar)
-- [ ] Email templates with better design
+- [ ] Audit logging (track all user actions)
+- [ ] File upload service (avatar, documents)
+- [ ] Email templates with better design (React Email)
 - [ ] WebSocket support for real-time features
 - [ ] Comprehensive unit and e2e tests
+- [ ] Background jobs for cleanup (Bull/BullMQ)
+- [ ] API rate limiting per user/IP
+- [ ] Account lockout after failed attempts
 
 ## 📄 License
 

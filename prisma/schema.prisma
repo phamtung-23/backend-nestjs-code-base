@@ -26,7 +26,8 @@ model User {
   updatedAt       DateTime @updatedAt
 
   // Relations
-  otpCodes Otp[]
+  otpCodes      Otp[]
+  refreshTokens RefreshToken[]
 
   @@map("users")
 }
@@ -60,4 +61,23 @@ enum OtpType {
   LOGIN
   VERIFICATION
   PASSWORD_RESET
+}
+
+// Refresh Token model for JWT refresh mechanism
+model RefreshToken {
+  id        String   @id @default(cuid())
+  token     String   @unique
+  expiresAt DateTime
+  isRevoked Boolean  @default(false)
+  userAgent String?
+  ipAddress String?
+  createdAt DateTime @default(now())
+
+  // Relations
+  userId String
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([token])
+  @@map("refresh_tokens")
 }

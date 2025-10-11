@@ -7,6 +7,8 @@ import {
   ValidationPipe,
   Get,
   Patch,
+  Req,
+  Ip,
 } from '@nestjs/common';
 import {
   ApiTags,
@@ -27,6 +29,8 @@ import {
   VerifyOtpDto,
   ChangePasswordDto,
   MessageResponseDto,
+  RefreshTokenDto,
+  RefreshTokenResponseDto,
 } from './dto/auth.dto';
 import { LocalAuthGuard } from './guards/local-auth.guard';
 import { JwtAuthGuard } from './guards/jwt-auth.guard';
@@ -49,8 +53,13 @@ export class AuthController {
   @RateLimit(5, 60000) // 5 attempts per minute
   @UseGuards(LocalAuthGuard)
   @Post('login')
-  login(@Request() req: AuthenticatedRequest) {
-    const result = this.authService.login(req.user);
+  async login(
+    @Request() req: AuthenticatedRequest,
+    @Req() request: any,
+    @Ip() ipAddress: string,
+  ) {
+    const userAgent = request.headers['user-agent'];
+    const result = await this.authService.login(req.user, userAgent, ipAddress);
     return ResponseHelper.success(result, 'Login successful');
   }
 
@@ -168,8 +177,18 @@ export class AuthController {
     type: AuthResponseDto,
   })
   @Post('verify-otp')
-  async verifyOtp(@Body(new ValidationPipe()) verifyOtpDto: VerifyOtpDto) {
-    return this.authService.verifyOtp(verifyOtpDto.email, verifyOtpDto.otpCode);
+  async verifyOtp(
+    @Body(new ValidationPipe()) verifyOtpDto: VerifyOtpDto,
+    @Req() request: any,
+    @Ip() ipAddress: string,
+  ) {
+    const userAgent = request.headers['user-agent'];
+    return this.authService.verifyOtp(
+      verifyOtpDto.email,
+      verifyOtpDto.otpCode,
+      userAgent,
+      ipAddress,
+    );
   }
 
   @ApiOperation({ summary: 'Get current user profile' })
@@ -195,5 +214,54 @@ export class AuthController {
       userProfile,
       'Profile retrieved successfully',
     );
+  }
+
+  @ApiOperation({ summary: 'Refresh access token' })
+  @ApiBody({ type: RefreshTokenDto })
+  @ApiResponse({
+    status: 200,
+    description: 'New tokens generated',
+    type: RefreshTokenResponseDto,
+  })
+  @Post('refresh-token')
+  async refreshToken(
+    @Body(new ValidationPipe()) refreshTokenDto: RefreshTokenDto,
+    @Req() request: any,
+    @Ip() ipAddress: string,
+  ) {
+    const userAgent = request.headers['user-agent'];
+    const result = await this.authService.refreshAccessToken(
+      refreshTokenDto.refresh_token,
+      userAgent,
+      ipAddress,
+    );
+    return ResponseHelper.success(result, 'Token refreshed successfully');
+  }
+
+  @ApiOperation({ summary: 'Logout (revoke refresh token)' })
+  @ApiBody({ type: RefreshTokenDto })
+  @ApiResponse({
+    status: 200,
+    description: 'Logged out successfully',
+    type: MessageResponseDto,
+  })
+  @Post('logout')
+  async logout(
+    @Body(new ValidationPipe()) refreshTokenDto: RefreshTokenDto,
+  ) {
+    return this.authService.revokeRefreshToken(refreshTokenDto.refresh_token);
+  }
+
+  @ApiOperation({ summary: 'Logout from all devices (revoke all refresh tokens)' })
+  @ApiBearerAuth('JWT-auth')
+  @ApiResponse({
+    status: 200,
+    description: 'Logged out from all devices',
+    type: MessageResponseDto,
+  })
+  @UseGuards(JwtAuthGuard)
+  @Post('logout-all')
+  async logoutAll(@Request() req: AuthenticatedRequest) {
+    return this.authService.revokeAllUserRefreshTokens(req.user.id);
   }
 }
