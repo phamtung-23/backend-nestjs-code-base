@@ -32,6 +32,11 @@ async function bootstrap() {
     .setTitle('Backend Base API')
     .setDescription('A comprehensive authentication and user management API')
     .setVersion('1.0')
+    .addServer(
+      `${configService.get('SWAGGER_PUBLIC_BASE_URL')}`,
+      'Development API via Traefik',
+    )
+    .addServer('http://localhost:3001', 'Development API without Traefik')
     .addBearerAuth(
       {
         type: 'http',

@@ -80,6 +80,7 @@ services:
       JWT_REFRESH_SECRET: ${JWT_REFRESH_SECRET}
       ALLOWED_ORIGINS: ${ALLOWED_ORIGINS}
       API_PREFIX: ${API_PREFIX}
+      SWAGGER_PUBLIC_BASE_URL: ${SWAGGER_PUBLIC_BASE_URL}
       # Frontend URL (for email links)
       FRONTEND_URL: ${FRONTEND_URL}
       # OTP configuration
