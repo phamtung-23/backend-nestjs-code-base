@@ -1,0 +1,29 @@
+# Dynamic configuration for production IP deployment
+http:
+  middlewares:
+    # Security headers middleware
+    prod-security-headers:
+      headers:
+        frameDeny: true
+        sslRedirect: false  # Disable for IP deployment
+        browserXssFilter: true
+        contentTypeNosniff: true
+        forceSTSHeader: false  # Disable HSTS for IP deployment
+        referrerPolicy: "strict-origin-when-cross-origin"
+        customRequestHeaders:
+          X-Forwarded-Proto: "http"  # Always HTTP for IP deployment
+        customResponseHeaders:
+          X-Robots-Tag: "noindex,nofollow,nosnippet,noarchive"
+          server: ""  # Hide server information
+
+    # Rate limiting middleware  
+    prod-rate-limit:
+      rateLimit:
+        burst: 100
+        average: 50
+
+    # Compression middleware
+    gzip-compression:
+      compress: {}
+
+# TLS configuration removed for IP deployment

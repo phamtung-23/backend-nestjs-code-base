@@ -1,0 +1,39 @@
+# Development HTTPS override - Use with: docker-compose -f docker-compose.yml -f docker-compose.dev-https.yml up
+services:
+  traefik:
+    command:
+      - --configFile=/etc/traefik/dev-https.yml
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - ./traefik/dev-https.yml:/etc/traefik/dev-https.yml:ro  # HTTPS config
+      - ./traefik/dynamic-dev-https.yml:/etc/traefik/dynamic-dev-https.yml:ro
+      - ./traefik/certs:/etc/traefik/certs:ro  # Mount certificates
+    environment:
+      - DOMAIN=${DOMAIN:-your.domain}
+    labels:
+      - "traefik.enable=true"
+      # Dashboard accessible via HTTPS
+      - "traefik.http.routers.traefik.rule=Host(`${DOMAIN:-your.domain}`) && PathPrefix(`/traefik`)"
+      - "traefik.http.routers.traefik.entrypoints=websecure"
+      - "traefik.http.routers.traefik.tls=true"
+      - "traefik.http.routers.traefik.service=api@internal"
+      - "traefik.http.middlewares.traefik-stripprefix.stripprefix.prefixes=/traefik"
+      - "traefik.http.routers.traefik.middlewares=traefik-stripprefix"
+
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+      target: development
+    environment:
+      # Update public URLs for HTTPS
+      ALLOWED_ORIGINS: ${ALLOWED_ORIGINS}
+    labels:
+      - "traefik.enable=true"
+      # API Router
+      - "traefik.http.routers.backend.rule=Host(`${DOMAIN:-your.domain}`) && PathPrefix(`/api`)"
+      - "traefik.http.routers.backend.entrypoints=websecure"
+      - "traefik.http.routers.backend.tls=true"
+      - "traefik.http.services.backend.loadbalancer.server.port=${NESTJS_PORT}"
+      - "traefik.http.middlewares.backend-stripprefix.stripprefix.prefixes=/api"
+      - "traefik.http.routers.backend.middlewares=backend-stripprefix"

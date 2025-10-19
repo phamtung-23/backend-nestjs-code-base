@@ -24,7 +24,7 @@ async function bootstrap() {
   );
 
   // API prefix
-  const apiPrefix = (configService.get('API_PREFIX') as string) || 'api/v1';
+  const apiPrefix = (configService.get('API_PREFIX') as string) || 'v1';
   app.setGlobalPrefix(apiPrefix);
 
   // Swagger configuration
@@ -46,7 +46,7 @@ async function bootstrap() {
     .build();
 
   const document = SwaggerModule.createDocument(app, config);
-  SwaggerModule.setup('api/docs', app, document, {
+  SwaggerModule.setup('docs', app, document, {
     swaggerOptions: {
       persistAuthorization: true,
     },

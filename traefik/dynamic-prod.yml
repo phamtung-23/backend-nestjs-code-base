@@ -1,0 +1,36 @@
+# Dynamic configuration for PRODUCTION environment
+
+http:
+  middlewares:
+    # Production security headers (strict)
+    prod-security-headers:
+      headers:
+        frameDeny: true
+        sslRedirect: true
+        browserXssFilter: true
+        contentTypeNosniff: true
+        forceSTSHeader: true
+        stsIncludeSubdomains: true
+        stsPreload: true
+        stsSeconds: 31536000
+        customRequestHeaders:
+          X-Production-Mode: "true"
+        customResponseHeaders:
+          X-Robots-Tag: "noindex, nofollow, nosnippet, noarchive"
+          Referrer-Policy: "strict-origin-when-cross-origin"
+        
+    # Rate limiting for production (stricter limits)  
+    prod-rate-limit:
+      rateLimit:
+        burst: 50
+        average: 25
+    
+    # Add compression for better performance
+    gzip-compression:
+      compress: {}
+
+  # Router configuration can be added here if needed
+  # routers: {}
+  
+  # Service configuration can be added here if needed
+  # services: {}

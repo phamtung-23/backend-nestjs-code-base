@@ -1,0 +1,143 @@
+# Production configuration for IP-only deployment (without domain)
+
+services:
+  postgres:
+    volumes:
+      - ./postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
+  redis:
+    image: redis:7-alpine
+    restart: always
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    command: redis-server --appendonly yes
+    security_opt:
+      - no-new-privileges:true
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+          cpus: '0.2'
+        reservations:
+          memory: 128M
+          cpus: '0.1'
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  traefik:
+    image: traefik:v3.0
+    restart: always
+    command:
+      - --configFile=/etc/traefik/prod-ip.yml
+    ports:
+      - "80:80"
+      # No HTTPS port for IP deployment
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - ./traefik/prod-ip.yml:/etc/traefik/prod-ip.yml:ro
+      - ./traefik/dynamic-prod-ip.yml:/etc/traefik/dynamic-prod-ip.yml:ro
+    environment:
+      - DOMAIN=${DOMAIN}
+    security_opt:
+      - no-new-privileges:true
+    deploy:
+      resources:
+        limits:
+          memory: 128M
+          cpus: '0.1'
+        reservations:
+          memory: 64M
+          cpus: '0.05'
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  backend:
+    build:
+      target: production
+    ports:
+      - "${NESTJS_CONTAINER_PORT}:${NESTJS_PORT}"  # Expose port directly for external access
+    environment:
+      NODE_ENV: production
+      PORT: ${NESTJS_PORT}
+      DATABASE_URL: postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
+      JWT_SECRET: ${JWT_SECRET}
+      JWT_REFRESH_SECRET: ${JWT_REFRESH_SECRET}
+      ALLOWED_ORIGINS: ${ALLOWED_ORIGINS}
+      API_PREFIX: ${API_PREFIX}
+      # Frontend URL (for email links)
+      FRONTEND_URL: ${FRONTEND_URL}
+      # OTP configuration
+      OTP_EXPIRY_MINUTES: ${OTP_EXPIRY_MINUTES}
+      OTP_MAX_ATTEMPTS: ${OTP_MAX_ATTEMPTS}
+      OTP_RATE_LIMIT_MINUTES: ${OTP_RATE_LIMIT_MINUTES}
+      OTP_CODE_LENGTH: ${OTP_CODE_LENGTH}
+      # Redis configuration
+      REDIS_HOST: ${REDIS_HOST-redis}
+      REDIS_PORT: ${REDIS_PORT-6379}
+      # SMTP Email Configuration
+      SMTP_HOST: ${SMTP_HOST}
+      SMTP_PORT: ${SMTP_PORT}
+      SMTP_USER: ${SMTP_USER}
+      SMTP_PASS: ${SMTP_PASS}
+      SMTP_FROM: ${SMTP_FROM}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    labels:
+      - "traefik.enable=true"
+      # API Router - Use PathPrefix only (no Host restriction)
+      - "traefik.http.routers.backend.rule=PathPrefix(`/api`)"
+      - "traefik.http.routers.backend.entrypoints=web"
+      - "traefik.http.services.backend.loadbalancer.server.port=${NESTJS_PORT}"
+      - "traefik.http.middlewares.backend-stripprefix.stripprefix.prefixes=/api"
+      - "traefik.http.routers.backend.middlewares=backend-stripprefix,prod-security-headers@file,prod-rate-limit@file,gzip-compression@file"
+      - "traefik.http.routers.backend.priority=10"
+    restart: always
+    volumes: []
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:${NESTJS_PORT}/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    security_opt:
+      - no-new-privileges:true
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+          cpus: '0.5'
+        reservations:
+          memory: 256M
+          cpus: '0.25'
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+volumes:
+  redis_data:
+
+networks:
+  default:
+    name: traefik-network
+    driver: bridge

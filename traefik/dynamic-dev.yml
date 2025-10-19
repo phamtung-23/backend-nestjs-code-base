@@ -1,0 +1,28 @@
+# Dynamic configuration for DEVELOPMENT environment
+
+http:
+  middlewares:
+    # Development security headers (less strict)
+    dev-security-headers:
+      headers:
+        frameDeny: false
+        sslRedirect: false
+        browserXssFilter: true
+        contentTypeNosniff: true
+        forceSTSHeader: false
+        stsIncludeSubdomains: false
+        stsPreload: false
+        customRequestHeaders:
+          X-Development-Mode: "true"
+        
+    # Rate limiting for development (higher limits)
+    dev-rate-limit:
+      rateLimit:
+        burst: 200
+        average: 100
+
+  # Router configuration can be added here if needed
+  routers: {}
+  
+  # Service configuration can be added here if needed  
+  services: {}

@@ -1,0 +1,42 @@
+# Traefik static configuration for LOCAL HTTPS DEVELOPMENT
+global:
+  checkNewVersion: false
+  sendAnonymousUsage: false
+
+api:
+  dashboard: true
+  debug: true
+
+entryPoints:
+  web:
+    address: ":80"
+    # Redirect HTTP to HTTPS even in development
+    http:
+      redirections:
+        entrypoint:
+          to: websecure
+          scheme: https
+          permanent: true
+  websecure:
+    address: ":443"
+
+providers:
+  docker:
+    endpoint: "unix:///var/run/docker.sock"
+    exposedByDefault: false
+    watch: true
+  file:
+    filename: /etc/traefik/dynamic-dev-https.yml
+    watch: true
+
+# No certificate resolvers needed for self-signed certs
+
+log:
+  level: DEBUG
+
+accessLog: {}
+
+metrics:
+  prometheus:
+    addEntryPointsLabels: true
+    addServicesLabels: true

@@ -1,0 +1,43 @@
+# Environment files
+.env
+
+# Database data
+postgres_data/
+
+# Redis data
+redis_data/
+
+# MinIO data
+minio_data/
+
+
+# Docker volumes
+volumes/
+
+# Logs
+*.log
+
+# OS generated files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# IDE files
+.vscode/
+.idea/
+
+# Backup files
+*.bak
+*.backup
+# SSL Certificate storage (contains private keys)
+traefik/acme.json
+# Local HTTPS certificates
+traefik/certs/*.crt
+traefik/certs/*.key
+
+# Frontend test
+frontend-test/
