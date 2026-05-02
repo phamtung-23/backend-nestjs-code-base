@@ -5,7 +5,7 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
-import { PrismaService } from 'src/prisma/prisma.service';
+import { PrismaService } from '../../prisma/prisma.service';
 import { MailService } from '../mail/mail.service';
 import * as bcrypt from 'bcryptjs';
 import { User } from './interfaces/auth.interface';
@@ -34,7 +34,7 @@ export class AuthService {
 
   async login(user: User, userAgent?: string, ipAddress?: string) {
     const payload = { email: user.email, sub: user.id, role: user.role };
-    
+
     // Generate access token (short-lived: 15 minutes)
     const accessToken = this.jwtService.sign(payload, {
       expiresIn: '1d',
@@ -248,11 +248,7 @@ export class AuthService {
     };
   }
 
-  async resetPassword(
-    email: string,
-    otpCode: string,
-    newPassword: string,
-  ) {
+  async resetPassword(email: string, otpCode: string, newPassword: string) {
     const user = await this.prisma.user.findUnique({
       where: { email },
     });
@@ -452,10 +448,9 @@ export class AuthService {
     ipAddress?: string,
   ) {
     // Verify refresh token JWT signature
-    let payload: any;
     try {
-      payload = this.jwtService.verify(refreshToken);
-    } catch (error) {
+      this.jwtService.verify(refreshToken);
+    } catch {
       throw new UnauthorizedException('Invalid or expired refresh token');
     }
 

@@ -21,10 +21,7 @@ export class MailService {
 
   async sendVerificationOtp(email: string, otpCode: string): Promise<void> {
     const mailOptions = {
-      from: this.configService.get<string>(
-        'SMTP_FROM',
-        'noreply@yourapp.com',
-      ),
+      from: this.configService.get<string>('SMTP_FROM', 'noreply@yourapp.com'),
       to: email,
       subject: 'Verify Your Email Address',
       html: `
@@ -75,10 +72,7 @@ export class MailService {
       await this.transporter.sendMail(mailOptions);
       this.logger.log(`Password reset OTP sent to ${email}`);
     } catch (error) {
-      this.logger.error(
-        `Failed to send password reset OTP to ${email}`,
-        error,
-      );
+      this.logger.error(`Failed to send password reset OTP to ${email}`, error);
       throw new Error('Failed to send password reset email');
     }
   }

@@ -1,0 +1,111 @@
+name: Dev CI/CD Pipeline
+
+# ============================================================
+# WORKFLOW SUMMARY:
+#
+# Pull Request (validate ONLY - NO deployment):
+#   1. Lint code (blocks merge if failed)
+#   2. Run tests with coverage (blocks merge if failed)
+#
+# Push to dev (after merge):
+#   1. SSH to staging server
+#   2. git pull latest code
+#   3. docker compose up -d --build (rebuild backend image on server)
+# ============================================================
+
+on:
+  push:
+    branches: [dev]
+  pull_request:
+    branches: [dev]
+
+permissions:
+  contents: read
+  pull-requests: write
+
+# Cancel superseded PR runs; let pushes to dev queue so deploys stay ordered.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  # ============================================================
+  # VALIDATION (PR only)
+  # ============================================================
+  lint:
+    name: Code Quality & Linting
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: "yarn"
+          cache-dependency-path: backend/yarn.lock
+
+      - name: Install dependencies
+        working-directory: backend
+        run: yarn install --frozen-lockfile
+
+      - name: Run ESLint
+        working-directory: backend
+        run: yarn lint
+
+      - name: Check code formatting
+        working-directory: backend
+        run: yarn format:check
+
+  test:
+    name: Unit Tests & Coverage
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: "yarn"
+          cache-dependency-path: backend/yarn.lock
+
+      - name: Install dependencies
+        working-directory: backend
+        run: yarn install --frozen-lockfile
+
+      - name: Run tests with coverage
+        working-directory: backend
+        run: yarn test:cov
+
+  # ============================================================
+  # DEPLOY (push to dev only)
+  # ============================================================
+  deploy-staging:
+    name: Deploy to Staging
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    if: github.event_name == 'push'
+    steps:
+      - name: Deploy via SSH
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.STAGING_HOST }}
+          username: ${{ secrets.STAGING_USER }}
+          key: ${{ secrets.STAGING_SSH_KEY }}
+          port: ${{ secrets.STAGING_PORT || 22 }}
+          script: |
+            set -e
+            cd /home/ecoupon/ecoupon-be
+
+            git fetch origin
+            git checkout dev
+            git pull origin dev
+
+            docker compose -f docker-compose.yml -f docker-compose.prod-ip.yml up -d --build
+
+            docker image prune -f

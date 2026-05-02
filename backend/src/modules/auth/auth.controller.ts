@@ -246,13 +246,13 @@ export class AuthController {
     type: MessageResponseDto,
   })
   @Post('logout')
-  async logout(
-    @Body(new ValidationPipe()) refreshTokenDto: RefreshTokenDto,
-  ) {
+  async logout(@Body(new ValidationPipe()) refreshTokenDto: RefreshTokenDto) {
     return this.authService.revokeRefreshToken(refreshTokenDto.refresh_token);
   }
 
-  @ApiOperation({ summary: 'Logout from all devices (revoke all refresh tokens)' })
+  @ApiOperation({
+    summary: 'Logout from all devices (revoke all refresh tokens)',
+  })
   @ApiBearerAuth('JWT-auth')
   @ApiResponse({
     status: 200,
