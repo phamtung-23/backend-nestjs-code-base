@@ -32,6 +32,7 @@ import { GlobalExceptionFilter } from './common/filters/global-exception.filter'
             host: configService.get('REDIS_HOST') || 'localhost',
             port: parseInt(configService.get('REDIS_PORT') || '6379'),
           },
+          password: configService.get('REDIS_PASSWORD') || undefined,
         }),
         ttl: 60 * 60 * 1000, // 1 hour in milliseconds
       }),

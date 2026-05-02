@@ -1,0 +1,192 @@
+# Dev SERVER configuration (deployed staging environment, not local laptop).
+# Usage: docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d
+#
+# Differs from docker-compose.prod.yml:
+#   - Traefik dashboard exposed at /traefik (basic auth required)
+#   - Let's Encrypt STAGING certs (won't be browser-trusted)
+#   - INFO log level
+#   - Looser rate limit (dev-rate-limit middleware)
+#   - Mailpit available (commented in below) to capture outbound email
+#
+# For LOCAL development on a laptop, do NOT use this file — use the auto-loaded
+# docker-compose.override.yml instead.
+
+services:
+  postgres:
+    volumes:
+      - ./postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
+  redis:
+    image: redis:7-alpine
+    restart: always
+    volumes:
+      - redis_data:/data
+    security_opt:
+      - no-new-privileges:true
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+          cpus: '0.2'
+        reservations:
+          memory: 128M
+          cpus: '0.1'
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  traefik:
+    image: traefik:v3.0
+    restart: always
+    command:
+      - --configFile=/etc/traefik/dev-server.yml
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - ./traefik/dev-server.yml:/etc/traefik/dev-server.yml:ro
+      - ./traefik/dynamic-dev-server.yml:/etc/traefik/dynamic-dev-server.yml:ro
+      # IMPORTANT: acme-dev.json must be chmod 600 before first start.
+      # Run on host: `touch traefik/acme-dev.json && chmod 600 traefik/acme-dev.json`
+      - ./traefik/acme-dev.json:/acme-dev.json
+    environment:
+      - DOMAIN=${DOMAIN}
+    labels:
+      - "traefik.enable=true"
+      # Dashboard router — protected by basic auth, accessible at https://${DOMAIN}/traefik
+      - "traefik.http.routers.dashboard.rule=Host(`${DOMAIN}`) && (PathPrefix(`/traefik`) || PathPrefix(`/api/dashboard`))"
+      - "traefik.http.routers.dashboard.entrypoints=websecure"
+      - "traefik.http.routers.dashboard.tls=true"
+      - "traefik.http.routers.dashboard.tls.certresolver=letsencrypt"
+      - "traefik.http.routers.dashboard.service=api@internal"
+      # basicAuth users — generate with `htpasswd -nb admin yourpassword`,
+      # paste into .env as TRAEFIK_DASHBOARD_USERS (escape every $ as $$).
+      - "traefik.http.middlewares.dashboard-auth.basicauth.users=${TRAEFIK_DASHBOARD_USERS}"
+      - "traefik.http.middlewares.dashboard-stripprefix.stripprefix.prefixes=/traefik"
+      - "traefik.http.routers.dashboard.middlewares=dashboard-auth,dashboard-stripprefix"
+    security_opt:
+      - no-new-privileges:true
+    deploy:
+      resources:
+        limits:
+          memory: 128M
+          cpus: '0.1'
+        reservations:
+          memory: 64M
+          cpus: '0.05'
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  backend:
+    build:
+      target: production
+    ports:
+      - "127.0.0.1:${NESTJS_CONTAINER_PORT}:${NESTJS_PORT}"
+    environment:
+      NODE_ENV: production
+      PORT: ${NESTJS_PORT}
+      DATABASE_URL: postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
+      JWT_SECRET: ${JWT_SECRET}
+      JWT_REFRESH_SECRET: ${JWT_REFRESH_SECRET}
+      ALLOWED_ORIGINS: ${ALLOWED_ORIGINS}
+      API_PREFIX: ${API_PREFIX}
+      SWAGGER_PUBLIC_BASE_URL: ${SWAGGER_PUBLIC_BASE_URL}
+      FRONTEND_URL: ${FRONTEND_URL}
+      OTP_EXPIRY_MINUTES: ${OTP_EXPIRY_MINUTES}
+      OTP_MAX_ATTEMPTS: ${OTP_MAX_ATTEMPTS}
+      OTP_RATE_LIMIT_MINUTES: ${OTP_RATE_LIMIT_MINUTES}
+      OTP_CODE_LENGTH: ${OTP_CODE_LENGTH}
+      REDIS_HOST: ${REDIS_HOST-redis}
+      REDIS_PORT: ${REDIS_PORT-6379}
+      REDIS_PASSWORD: ${REDIS_PASSWORD}
+      SMTP_HOST: ${SMTP_HOST}
+      SMTP_PORT: ${SMTP_PORT}
+      SMTP_USER: ${SMTP_USER}
+      SMTP_PASS: ${SMTP_PASS}
+      SMTP_FROM: ${SMTP_FROM}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.backend.rule=Host(`${DOMAIN}`) && PathPrefix(`/api`)"
+      - "traefik.http.routers.backend.entrypoints=websecure"
+      - "traefik.http.routers.backend.tls=true"
+      - "traefik.http.routers.backend.tls.certresolver=letsencrypt"
+      - "traefik.http.services.backend.loadbalancer.server.port=${NESTJS_PORT}"
+      - "traefik.http.middlewares.backend-stripprefix.stripprefix.prefixes=/api"
+      - "traefik.http.routers.backend.middlewares=backend-stripprefix,dev-security-headers@file,dev-rate-limit@file,gzip-compression@file"
+      - "traefik.http.routers.backend.priority=10"
+    restart: always
+    volumes: []
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:${NESTJS_PORT}/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    security_opt:
+      - no-new-privileges:true
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+          cpus: '0.5'
+        reservations:
+          memory: 256M
+          cpus: '0.25'
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # ---------------------------------------------------------------------------
+  # Optional: Mailpit — captures all outbound email instead of sending real ones.
+  # Uncomment this block AND override SMTP_* in the backend env above to:
+  #   SMTP_HOST: mailpit
+  #   SMTP_PORT: 1025
+  #   SMTP_USER: ""
+  #   SMTP_PASS: ""
+  # Web UI is exposed at https://${DOMAIN}/mailpit (basic auth recommended).
+  # ---------------------------------------------------------------------------
+  # mailpit:
+  #   image: axllent/mailpit:latest
+  #   restart: always
+  #   environment:
+  #     MP_MAX_MESSAGES: 5000
+  #     MP_DATABASE: /data/mailpit.db
+  #     MP_SMTP_AUTH_ACCEPT_ANY: 1
+  #     MP_SMTP_AUTH_ALLOW_INSECURE: 1
+  #   volumes:
+  #     - mailpit_data:/data
+  #   labels:
+  #     - "traefik.enable=true"
+  #     - "traefik.http.routers.mailpit.rule=Host(`${DOMAIN}`) && PathPrefix(`/mailpit`)"
+  #     - "traefik.http.routers.mailpit.entrypoints=websecure"
+  #     - "traefik.http.routers.mailpit.tls=true"
+  #     - "traefik.http.routers.mailpit.tls.certresolver=letsencrypt"
+  #     - "traefik.http.services.mailpit.loadbalancer.server.port=8025"
+  #     - "traefik.http.middlewares.mailpit-stripprefix.stripprefix.prefixes=/mailpit"
+  #     - "traefik.http.routers.mailpit.middlewares=dashboard-auth,mailpit-stripprefix"
+
+volumes:
+  redis_data:
+  # mailpit_data:
+
+networks:
+  default:
+    name: traefik-network
+    driver: bridge

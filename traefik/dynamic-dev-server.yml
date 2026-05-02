@@ -1,0 +1,36 @@
+# Dynamic configuration for DEV SERVER.
+# Differs from dynamic-prod.yml: looser rate limit, basic auth for dashboard,
+# X-Robots-Tag noindex kept (dev server must NEVER be indexed by search engines).
+
+http:
+  middlewares:
+    # Security headers — same strictness as prod, but X-Robots-Tag is essential here.
+    dev-security-headers:
+      headers:
+        frameDeny: true
+        sslRedirect: true
+        browserXssFilter: true
+        contentTypeNosniff: true
+        forceSTSHeader: true
+        stsIncludeSubdomains: true
+        stsPreload: true
+        stsSeconds: 31536000
+        customRequestHeaders:
+          X-Dev-Mode: "true"
+        customResponseHeaders:
+          # CRITICAL: prevent search engines from indexing the dev server.
+          X-Robots-Tag: "noindex, nofollow, nosnippet, noarchive"
+          Referrer-Policy: "strict-origin-when-cross-origin"
+
+    # Rate limit — looser than prod so QA can stress-test without false 429s.
+    dev-rate-limit:
+      rateLimit:
+        burst: 200
+        average: 100
+
+    gzip-compression:
+      compress: {}
+
+# Note: dashboard basic auth is configured via Docker labels on the traefik
+# service in docker-compose.dev.yml — Traefik's file provider does NOT
+# substitute ${...} env vars, so the password lives where Compose can interpolate it.

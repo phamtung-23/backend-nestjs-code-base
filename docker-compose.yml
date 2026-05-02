@@ -1,6 +1,6 @@
 services:
   traefik:
-    image: traefik:v3.0
+    image: traefik:v3.6.1
     restart: always
     command:
       - --configFile=/etc/traefik/dev.yml
@@ -30,8 +30,8 @@ services:
       POSTGRES_DB: ${POSTGRES_DB}
     volumes:
       - ./postgres_data:/var/lib/postgresql/data
-    ports:
-      - "${POSTGRES_PORT}:5432"
+    # Host port mapping moved to docker-compose.override.yml (dev only, 127.0.0.1).
+    # In prod, postgres is reachable only from the compose network.
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
       interval: 10s
@@ -42,17 +42,18 @@ services:
   redis:
     image: redis:7-alpine
     restart: always
-    ports:
-      - "${REDIS_PORT:-6379}:6379"
+    environment:
+      REDIS_PASSWORD: ${REDIS_PASSWORD:?REDIS_PASSWORD is required}
+    # Host port mapping moved to docker-compose.override.yml (dev only, 127.0.0.1).
     volumes:
       - redis_data:/data
     healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
+      test: ["CMD-SHELL", "redis-cli -a \"$$REDIS_PASSWORD\" --no-auth-warning ping | grep -q PONG"]
       interval: 10s
       timeout: 5s
       retries: 5
       start_period: 10s
-    command: redis-server --appendonly yes
+    command: ["sh", "-c", "redis-server --appendonly yes --requirepass \"$$REDIS_PASSWORD\""]
 
   backend:
     build:
@@ -91,6 +92,7 @@ services:
       # Redis configuration
       REDIS_HOST: ${REDIS_HOST-redis}
       REDIS_PORT: ${REDIS_PORT-6379}
+      REDIS_PASSWORD: ${REDIS_PASSWORD}
       # SMTP Email Configuration
       SMTP_HOST: ${SMTP_HOST}
       SMTP_PORT: ${SMTP_PORT}

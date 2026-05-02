@@ -1,0 +1,53 @@
+# Traefik static configuration for DEV SERVER (staging deployment).
+# Differs from prod.yml: dashboard enabled, Let's Encrypt staging, INFO logs.
+
+global:
+  checkNewVersion: false
+  sendAnonymousUsage: false
+
+api:
+  dashboard: true
+  debug: false
+
+entryPoints:
+  web:
+    address: ":80"
+    http:
+      redirections:
+        entrypoint:
+          to: websecure
+          scheme: https
+          permanent: true
+  websecure:
+    address: ":443"
+
+providers:
+  docker:
+    endpoint: "unix:///var/run/docker.sock"
+    exposedByDefault: false
+    watch: true
+  file:
+    filename: /etc/traefik/dynamic-dev-server.yml
+    watch: true
+
+# Let's Encrypt STAGING — does not have rate limits so safe for repeated testing.
+# Browsers will show a cert warning because staging certs aren't trusted.
+# To switch to real LE certs, comment out caServer below and clear acme-dev.json.
+certificatesResolvers:
+  letsencrypt:
+    acme:
+      email: "admin@yourdomain.com"  # Update with your email
+      storage: /acme-dev.json
+      caServer: https://acme-staging-v02.api.letsencrypt.org/directory
+      httpChallenge:
+        entryPoint: web
+
+log:
+  level: INFO
+
+accessLog: {}
+
+metrics:
+  prometheus:
+    addEntryPointsLabels: true
+    addServicesLabels: true

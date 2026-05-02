@@ -6,7 +6,7 @@ import {
 } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
 import { PrismaService } from 'src/prisma/prisma.service';
-import { EmailService } from './services/email.service';
+import { MailService } from '../mail/mail.service';
 import * as bcrypt from 'bcryptjs';
 import { User } from './interfaces/auth.interface';
 import { RegisterDto, ChangePasswordDto } from './dto/auth.dto';
@@ -16,7 +16,7 @@ export class AuthService {
   constructor(
     private prisma: PrismaService,
     private jwtService: JwtService,
-    private emailService: EmailService,
+    private mailService: MailService,
   ) {}
 
   async validateUser(email: string, password: string): Promise<User | null> {
@@ -107,7 +107,7 @@ export class AuthService {
       },
     });
 
-    await this.emailService.sendVerificationOtp(user.email, otpCode);
+    await this.mailService.sendVerificationOtp(user.email, otpCode);
 
     // eslint-disable-next-line @typescript-eslint/no-unused-vars
     const { password: _, ...result } = user;
@@ -199,7 +199,7 @@ export class AuthService {
       },
     });
 
-    await this.emailService.sendVerificationOtp(email, otpCode);
+    await this.mailService.sendVerificationOtp(email, otpCode);
 
     return { message: 'Verification code sent successfully' };
   }
@@ -240,7 +240,7 @@ export class AuthService {
       },
     });
 
-    await this.emailService.sendPasswordResetOtp(email, otpCode);
+    await this.mailService.sendPasswordResetOtp(email, otpCode);
 
     return {
       message:
@@ -359,7 +359,7 @@ export class AuthService {
       },
     });
 
-    await this.emailService.sendOtpEmail(email, otpCode);
+    await this.mailService.sendOtpEmail(email, otpCode);
 
     return { message: 'OTP sent successfully' };
   }

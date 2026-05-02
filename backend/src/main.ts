@@ -1,5 +1,5 @@
 import { NestFactory } from '@nestjs/core';
-import { ValidationPipe } from '@nestjs/common';
+import { ValidationPipe, VersioningType } from '@nestjs/common';
 import { SwaggerModule, DocumentBuilder } from '@nestjs/swagger';
 import { ConfigService } from '@nestjs/config';
 import { AppModule } from './app.module';
@@ -23,9 +23,17 @@ async function bootstrap() {
     }),
   );
 
-  // API prefix
-  const apiPrefix = (configService.get('API_PREFIX') as string) || 'v1';
-  app.setGlobalPrefix(apiPrefix);
+  // API prefix + URI versioning. Traefik strips `/api` upstream, so the
+  // backend itself only owns the version segment (e.g. /v1/...).
+  const apiPrefix = configService.get<string>('API_PREFIX') ?? '';
+  const apiVersion = configService.get<string>('API_VERSION') ?? '1';
+  if (apiPrefix) {
+    app.setGlobalPrefix(apiPrefix);
+  }
+  app.enableVersioning({
+    type: VersioningType.URI,
+    defaultVersion: apiVersion,
+  });
 
   // Swagger configuration
   const config = new DocumentBuilder()
@@ -61,7 +69,7 @@ async function bootstrap() {
   await app.listen(port);
 
   console.log(`🚀 Application is running on: http://localhost:${port}`);
-  console.log(`📚 Swagger documentation: http://localhost:${port}/api/docs`);
+  console.log(`📚 Swagger documentation: http://localhost:${port}/docs`);
 }
 
 void bootstrap();

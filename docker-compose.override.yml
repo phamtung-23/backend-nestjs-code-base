@@ -1,15 +1,23 @@
 # Development overrides - automatically loaded by docker-compose
 
 services:
+  postgres:
+    # Dev-only host port, bound to localhost so it isn't reachable on the LAN.
+    ports:
+      - "127.0.0.1:${POSTGRES_PORT}:5432"
+
+  redis:
+    # Dev-only host port, bound to localhost. Auth still required (REDIS_PASSWORD).
+    ports:
+      - "127.0.0.1:${REDIS_PORT:-6379}:6379"
+
   backend:
-    build:
-      target: development
     environment:
       NODE_ENV: development
-    # Enable debugging port for development
+    # Dev-only ports bound to localhost. Production traffic goes through Traefik.
     ports:
-      - "9229:9229"  # Debug port for VS Code
-      - "${NESTJS_CONTAINER_PORT}:${NESTJS_PORT}"  # Expose port directly for external access
+      - "127.0.0.1:9229:9229"  # Debug port for VS Code
+      - "127.0.0.1:${NESTJS_CONTAINER_PORT}:${NESTJS_PORT}"
     # Development-specific volumes for hot reload
     volumes:
       - ./backend/src:/app/src

@@ -53,6 +53,7 @@ OTP_CODE_LENGTH=6
 # Redis Configuration
 REDIS_HOST=redis
 REDIS_PORT=6379
+REDIS_PASSWORD=change-me-strong-redis-password
 
 # SMTP Email Configuration
 SMTP_HOST=smtp.gmail.com
@@ -62,9 +63,9 @@ SMTP_PASS=your-app-password
 SMTP_FROM=your-email@gmail.com
 ```
 
-### 2. Development Mode
+### 2. Local Development (laptop)
 
-Start all services in development mode:
+Hot-reload, debug port, ports bound to 127.0.0.1. The override file is auto-loaded.
 
 ```bash
 docker compose up -d
@@ -72,19 +73,26 @@ docker compose up -d
 
 This will:
 - Start PostgreSQL database
-- Start Redis cache
-- Build and start NestJS backend with hot reload
+- Start Redis cache (with auth — set `REDIS_PASSWORD` in `.env` first)
+- Build and start NestJS backend with hot reload (bind-mount `backend/src`)
 - Start Traefik reverse proxy
 
-### 3. Development with HTTPS
+### 3. Dev Server (staging deployment)
 
-For HTTPS development (requires SSL certificates):
+Deployed dev environment — NOT for laptops. Mirrors prod hardening but with
+Traefik dashboard, Let's Encrypt staging certs, looser rate limits.
 
 ```bash
-docker compose -f docker-compose.yml -f docker-compose.dev-https.yml up -d
-```
+# 1. One-time: prepare ACME storage
+touch traefik/acme-dev.json && chmod 600 traefik/acme-dev.json
 
-**Note**: You need to create SSL certificates first (see HTTPS Setup section).
+# 2. Generate the dashboard basic-auth hash and put it in .env as TRAEFIK_DASHBOARD_USERS
+htpasswd -nb admin yourpassword
+# escape every $ as $$ before pasting into .env
+
+# 3. Deploy
+docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d
+```
 
 ### 4. Production Mode
 
@@ -93,6 +101,9 @@ docker compose -f docker-compose.yml -f docker-compose.dev-https.yml up -d
 For production deployment with a domain name:
 
 ```bash
+# One-time: prepare ACME storage
+touch traefik/acme.json && chmod 600 traefik/acme.json
+
 docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d
 ```
 
@@ -107,17 +118,17 @@ docker compose -f docker-compose.yml -f docker-compose.prod-ip.yml up -d
 
 ## 🔗 Service URLs
 
-### Development (HTTP)
+### Local Development (HTTP)
 
 - **API**: http://localhost/api
 - **Traefik Dashboard**: http://localhost:8080
 - **Health Check**: http://localhost/api/health
 
-### Development (HTTPS)
+### Dev Server (HTTPS, Let's Encrypt staging)
 
-- **API**: https://localhost/api
-- **Traefik Dashboard**: https://localhost/traefik
-- **Health Check**: https://localhost/api/health
+- **API**: https://dev.yourdomain.com/api
+- **Traefik Dashboard**: https://dev.yourdomain.com/traefik (basic auth)
+- **Health Check**: https://dev.yourdomain.com/api/health
 
 ### Production (Domain)
 
@@ -129,46 +140,7 @@ docker compose -f docker-compose.yml -f docker-compose.prod-ip.yml up -d
 - **API**: http://192.168.1.100/api
 - **Health Check**: http://192.168.1.100/api/health
 
-## 🔧 HTTPS Setup
-
-### For Development with Local Domain
-
-1. **Add to hosts file** (requires admin privileges):
-
-   ```bash
-   # macOS/Linux
-   sudo echo "127.0.0.1 localhost" >> /etc/hosts
-
-   # Windows (run as Administrator)
-   echo 127.0.0.1 localhost >> C:\Windows\System32\drivers\etc\hosts
-   ```
-
-2. **Create SSL certificate directory**:
-
-   ```bash
-   mkdir -p traefik/certs
-   ```
-
-3. **Generate self-signed certificate**:
-
-   ```bash
-   openssl req -x509 -newkey rsa:4096 -keyout traefik/certs/localhost.key \
-     -out traefik/certs/localhost.crt -days 365 -nodes \
-     -subj "/C=VN/ST=HCM/L=HCM/O=Dev/OU=IT/CN=localhost" \
-     -addext "subjectAltName=DNS:localhost,DNS:*.localhost"
-
-   # Set proper permissions
-   chmod 600 traefik/certs/localhost.key
-   chmod 644 traefik/certs/localhost.crt
-   ```
-
-4. **Start with HTTPS**:
-
-   ```bash
-   docker compose -f docker-compose.yml -f docker-compose.dev-https.yml up -d
-   ```
-
-### For Production with Domain
+## 🔧 HTTPS Setup (Production with Domain)
 
 1. **Update Traefik configuration** in `traefik/prod.yml`:
 
@@ -211,22 +183,21 @@ backend-base/
 │   │   ├── migrations/        # Database migrations
 │   │   └── seed.ts            # Database seeding
 │   └── package.json           # Dependencies
-├── traefik/                   # Traefik configurations
-│   ├── dev.yml               # Development config
-│   ├── dev-https.yml         # Development HTTPS config
-│   ├── prod.yml              # Production config
-│   ├── prod-ip.yml           # Production IP-only config
-│   ├── dynamic-dev.yml       # Development dynamic config
-│   ├── dynamic-dev-https.yml # Development HTTPS dynamic config
-│   ├── dynamic-prod.yml      # Production dynamic config
-│   ├── dynamic-prod-ip.yml   # Production IP dynamic config
-│   └── certs/                # SSL certificates (for HTTPS dev)
-├── docker-compose.yml         # Base configuration
-├── docker-compose.override.yml # Development overrides (auto-loaded)
-├── docker-compose.dev-https.yml # HTTPS development
-├── docker-compose.prod.yml    # Production overrides (with domain)
-├── docker-compose.prod-ip.yml # Production overrides (IP only)
-└── .env                       # Environment variables
+├── traefik/                       # Traefik configurations
+│   ├── dev.yml                   # Local-dev static config
+│   ├── dev-server.yml            # Dev-server static config (LE staging, dashboard)
+│   ├── prod.yml                  # Production config
+│   ├── prod-ip.yml               # Production IP-only config
+│   ├── dynamic-dev.yml           # Local-dev dynamic config
+│   ├── dynamic-dev-server.yml    # Dev-server dynamic config
+│   ├── dynamic-prod.yml          # Production dynamic config
+│   └── dynamic-prod-ip.yml       # Production IP dynamic config
+├── docker-compose.yml             # Base configuration
+├── docker-compose.override.yml    # Local-laptop overrides (auto-loaded)
+├── docker-compose.dev.yml         # Dev SERVER overrides (staging deployment)
+├── docker-compose.prod.yml        # Production overrides (with domain)
+├── docker-compose.prod-ip.yml     # Production overrides (IP only)
+└── .env                           # Environment variables
 ```
 
 ## 🗄️ Database Management
@@ -443,6 +414,7 @@ docker compose logs -f traefik
 | `OTP_CODE_LENGTH`         | OTP code length                                            | `6`                                           |
 | `REDIS_HOST`              | Redis host                                                 | `redis`                                       |
 | `REDIS_PORT`              | Redis port                                                 | `6379`                                        |
+| `REDIS_PASSWORD`          | Redis auth password (required by base compose)             | Required                                      |
 | `SMTP_HOST`               | SMTP server host                                           | Required                                      |
 | `SMTP_PORT`               | SMTP server port                                           | `587`                                         |
 | `SMTP_USER`               | SMTP username                                              | Required                                      |
@@ -468,13 +440,6 @@ docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d
 
 # Production with IP only
 docker compose -f docker-compose.yml -f docker-compose.prod-ip.yml up -d
-```
-
-### HTTPS Development
-
-```bash
-# For HTTPS development with SSL certificates
-docker compose -f docker-compose.yml -f docker-compose.dev-https.yml up -d
 ```
 
 ## 📚 Additional Resources

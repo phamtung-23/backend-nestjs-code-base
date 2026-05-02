@@ -40,7 +40,7 @@ services:
         max-file: "3"
 
   traefik:
-    image: traefik:v3.0
+    image: traefik:v3.6.1
     restart: always
     command:
       - --configFile=/etc/traefik/prod.yml
@@ -52,6 +52,8 @@ services:
       - /var/run/docker.sock:/var/run/docker.sock:ro
       - ./traefik/prod.yml:/etc/traefik/prod.yml:ro  # Production config only
       - ./traefik/dynamic-prod.yml:/etc/traefik/dynamic-prod.yml:ro  # Production dynamic config only
+      # IMPORTANT: acme.json must be chmod 600 before first start, otherwise Traefik refuses to use it.
+      # Run on the host: `touch traefik/acme.json && chmod 600 traefik/acme.json`
       - ./traefik/acme.json:/acme.json  # SSL certificates storage
     # No labels needed - dashboard completely disabled in production
     environment:
@@ -75,8 +77,9 @@ services:
   backend:
     build:
       target: production
+    # Bind to localhost only - public traffic must go through Traefik (TLS, rate-limit, security headers).
     ports:
-      - "${NESTJS_CONTAINER_PORT}:${NESTJS_PORT}"  # Expose port directly for external access
+      - "127.0.0.1:${NESTJS_CONTAINER_PORT}:${NESTJS_PORT}"
     environment:
       NODE_ENV: production
       PORT: ${NESTJS_PORT}
@@ -96,6 +99,7 @@ services:
       # Redis configuration
       REDIS_HOST: ${REDIS_HOST-redis}
       REDIS_PORT: ${REDIS_PORT-6379}
+      REDIS_PASSWORD: ${REDIS_PASSWORD}
       # SMTP Email Configuration
       SMTP_HOST: ${SMTP_HOST}
       SMTP_PORT: ${SMTP_PORT}
