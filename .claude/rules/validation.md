@@ -3,12 +3,15 @@ paths:
   - "backend/src/**/dto/**/*.ts"
   - "backend/src/**/*.controller.ts"
   - "backend/src/common/query/**/*.ts"
+  - "backend/src/app.setup.ts"
 ---
 
 # Validation & DTOs
 
-- The global `ValidationPipe` in `main.ts` (`whitelist`, `forbidNonWhitelisted`, `transform`) is the only
-  validation pipe. Don't add `new ValidationPipe()` per parameter.
+- The global `ValidationPipe` in `src/app.setup.ts` (`whitelist`, `forbidNonWhitelisted`, `transform`,
+  `exceptionFactory: validationExceptionFactory`) is the only validation pipe. Don't add `new ValidationPipe()` per
+  parameter. Reusable `@Transform` functions (`trimString`, `normalizeEmail`, `toArray`, `toBoolean`) live in
+  `src/common/helpers/transform.helpers.ts`.
 - One DTO per operation: `CreateUserDto`, `UpdateUserDto extends PartialType(CreateUserDto)`,
   `ListUsersQueryDto extends ListQueryDto`, `UserResponseDto`. Import `PartialType` / `PickType` / `OmitType`
   from `@nestjs/swagger` so the docs follow.

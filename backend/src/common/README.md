@@ -1,133 +1,73 @@
-# Response Standard System
+# Response & Error Standard
 
-Hệ thống standardize response cho Football Web API.
+Chuẩn response dùng chung cho mọi API. Chi tiết quy ước nằm ở `.claude/rules/api-design.md` và
+`.claude/rules/errors.md`.
 
-## Cấu trúc Response
-
-Tất cả API response sẽ tuân theo format sau:
+## Success envelope
 
 ```typescript
 interface ApiResponse<T> {
   status: 'success' | 'error';
   message: string;
   data?: T;
-  meta?: {
-    total?: number;
-    page?: number;
-    limit?: number;
-  };
-  error?: {
-    code: number;
-    details?: any;
-  };
+  meta?: { page?: number; limit?: number; total?: number; totalPages?: number };
+  error?: ApiErrorBody; // chỉ có ở response lỗi
 }
 ```
 
-## Các Component
-
-### 1. ResponseInterceptor
-
-- Tự động wrap tất cả response thành `ApiResponse` format
-- Đã được config global trong `app.module.ts`
-- Nếu response đã có format `ApiResponse`, sẽ không thay đổi
-
-### 2. GlobalExceptionFilter
-
-- Handle tất cả exception và convert thành `ApiResponse` format
-- Đã được config global trong `app.module.ts`
-- Hiển thị stack trace trong development mode
-
-### 3. ResponseHelper
-
-Utility class để tạo response dễ dàng:
+- `ResponseInterceptor` (global) tự wrap dữ liệu controller trả về thành envelope. Nếu object trả về đã có cả
+  `status` và `message` thì được coi là envelope và giữ nguyên.
+- `ResponseHelper` tạo envelope khi cần message cụ thể:
 
 ```typescript
-// Success response
-ResponseHelper.success(data, 'Message', meta);
-
-// Error response
-ResponseHelper.error('Error message', 400, details);
-
-// Paginated response
-ResponseHelper.paginated(data, total, page, limit, 'Message');
+ResponseHelper.success(data, 'Article created');
+ResponseHelper.paginated(items, total, page, limit, 'Articles retrieved'); // meta có totalPages
 ```
 
-## Cách sử dụng
+- Không có helper cho lỗi: lỗi luôn được **throw** để `GlobalExceptionFilter` trả đúng HTTP status.
 
-### 1. Trả về data trực tiếp (tự động wrap)
-
-```typescript
-@Get()
-async findAll() {
-  return await this.service.findAll(); // Sẽ được wrap tự động
-}
-```
-
-### 2. Sử dụng ResponseHelper
-
-```typescript
-@Get()
-async findAll() {
-  const data = await this.service.findAll();
-  return ResponseHelper.success(data, 'Teams retrieved successfully');
-}
-```
-
-### 3. Pagination
-
-```typescript
-@Get()
-async findAll(@Query() query: PaginationDto) {
-  const { data, total } = await this.service.findAllPaginated(query);
-  return ResponseHelper.paginated(data, total, query.page, query.limit);
-}
-```
-
-## Ví dụ Response
-
-### Success Response
-
-```json
-{
-  "status": "success",
-  "message": "Teams retrieved successfully",
-  "data": [
-    {
-      "id": "1",
-      "name": "Team A"
-    }
-  ]
-}
-```
-
-### Error Response
+## Error envelope
 
 ```json
 {
   "status": "error",
-  "message": "Team not found",
+  "message": "Email is already registered",
   "data": null,
   "error": {
-    "code": 404,
-    "details": {
-      "path": "/teams/999",
-      "method": "GET"
-    }
+    "code": 409,
+    "errorCode": "USER_EMAIL_TAKEN",
+    "details": null,
+    "requestId": "7f1c2d3e-4b5a-4c6d-8e7f-9a0b1c2d3e4f",
+    "path": "/v1/users",
+    "timestamp": "2026-01-01T00:00:00.000Z"
   }
 }
 ```
 
-### Paginated Response
+- `errorCode`: mã ổn định cho client xử lý (không dựa vào `message`). Mã chung ở `constants/error-codes.ts`;
+  exception không kèm `errorCode` sẽ nhận mã theo HTTP status.
+- Validation lỗi → 400 `VALIDATION_FAILED`, `details = [{ field, message }]` (field lồng nhau dạng `items.0.name`).
+- Lỗi Prisma được map tập trung: P2002 → 409 `CONFLICT` (kèm `details.fields`), P2025 → 404, P2003/P2034 → 409.
+- Lỗi không lường trước → 500 `INTERNAL_ERROR` với message chung, không lộ chi tiết; stack được ghi log.
 
-```json
-{
-  "status": "success",
-  "message": "Teams retrieved successfully",
-  "data": [...],
-  "meta": {
-    "total": 100,
-    "page": 1,
-    "limit": 10
-  }
-}
+Cách throw:
+
+```typescript
+throw new ConflictException({
+  errorCode: 'USER_EMAIL_TAKEN',
+  message: 'Email is already registered',
+});
 ```
+
+## Request ID
+
+- Mọi response có header `X-Request-Id`, luôn do server sinh (không dùng id client gửi lên).
+- Id này nằm trong `error.requestId` và được `AppLogger` gắn vào mọi dòng log trong request (`[req <id>]`),
+  nên có thể tra log từ một response lỗi.
+- Lấy id ở bất kỳ đâu: `RequestContext.requestId()`.
+
+## List query
+
+`query/` chứa `ListQueryDto` (page, limit ≤ 100, sort, search, fields, include), `ProjectionQueryDto` và các
+helper `parseSort`, `buildSelect`, `buildSearch`, `pageMeta`. Module mẫu dùng đầy đủ các helper này nằm ở
+`.claude/skills/new-resource/reference/templates.md`.

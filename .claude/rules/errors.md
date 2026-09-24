@@ -27,10 +27,12 @@ paths:
 - `error.code`: HTTP status (existing field — keep it for compatibility).
 - `error.errorCode`: stable machine-readable UPPER_SNAKE code; clients branch on this, never on `message`.
 - `error.details`: `null`, an array of `{ field, message }` for validation errors (nested paths joined with
-  dots), or a small object for other structured context.
-- The current filter lacks `errorCode` / `requestId` / `path` / `timestamp`, returns message arrays for
-  validation errors, leaks internal messages of non-HTTP errors, and doesn't log (see CLAUDE.md
-  "Foundations status"). When you touch the filter, bring it to this format.
+  dots; `field` is `null` when the source doesn't say), or a small object for other structured context.
+- Document error responses with `@ApiErrorResponse(status, ...errorCodes)` from `src/common/decorators`.
+- Implemented by `src/common/filters/global-exception.filter.ts`. Exceptions without an `errorCode` get one from
+  their status (`STATUS_ERROR_CODES` in `src/common/constants/error-codes.ts`). Validation errors come from
+  `validationExceptionFactory` (wired into the global `ValidationPipe`) as `VALIDATION_FAILED` + field details.
+  Nest itself turns malformed JSON into a 400 `BAD_REQUEST`.
 
 ## Throwing errors
 
@@ -79,7 +81,8 @@ A service may still catch P2002 around one specific write to return a more preci
 
 ## 5xx and logging
 
-- 5xx responses always say `"Internal server error"` — never `exception.message`, stack traces, SQL or Prisma text.
-  Include `requestId` so support can correlate.
-- Log every 5xx with `logger.error(message, stack)` plus the requestId. Log 4xx only when useful (auth failures at
-  `warn`, without secrets).
+- Unexpected errors (anything that isn't an `HttpException` or a mapped Prisma error) always respond
+  `"Internal server error"` — never their message, stack trace, SQL or Prisma text. Messages of `HttpException`s are
+  authored by us and returned as-is, including 5xx ones such as a 503 from `/health`, so keep them free of internals.
+- The filter logs every 5xx with its stack; `AppLogger` adds the request id to the line. Log 4xx only when useful
+  (auth failures at `warn`, without secrets).

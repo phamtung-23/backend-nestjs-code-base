@@ -6,6 +6,7 @@ import {
 } from '@nestjs/common';
 import { ApiOperation, ApiResponse, ApiTags } from '@nestjs/swagger';
 import { SkipThrottle } from '@nestjs/throttler';
+import { ApiErrorResponse } from '../../common/decorators/api-error-response.decorator';
 import { PrismaService } from '../../prisma/prisma.service';
 
 // Served at /health (no version segment, no API prefix) for the Docker
@@ -18,7 +19,7 @@ export class HealthController {
 
   @ApiOperation({ summary: 'Health check' })
   @ApiResponse({ status: 200, description: 'Service and database are up' })
-  @ApiResponse({ status: 503, description: 'Database is unreachable' })
+  @ApiErrorResponse(503, 'SERVICE_UNAVAILABLE')
   @Get()
   async check() {
     try {

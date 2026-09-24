@@ -38,17 +38,22 @@ paths:
 ## Rate limiting
 
 - Global `ThrottlerGuard` (`APP_GUARD`), default 100 req/min per IP; `trust proxy` = 1 because Traefik sits in
-  front.
+  front and overwrites `X-Forwarded-For`. If another proxy/CDN is ever added in front of Traefik, raise the hop count
+  in `src/app.setup.ts`, or every client shares one rate-limit bucket.
 - Stricter `@RateLimit(limit, ttlMs)` on login, register, OTP send/verify, forgot/reset password, and anything
   that sends email/SMS or is expensive. `@SkipThrottle()` only on health/metrics.
 - Multiple instances need Redis-backed throttler storage (CLAUDE.md "Foundations status").
 
 ## CORS, headers, docs
 
-- Allowed origins come from `ALLOWED_ORIGINS` (comma-separated); never `*` together with `credentials: true`.
-  `main.ts` still hardcodes origins (CLAUDE.md "Foundations status").
-- helmet for security headers; Traefik adds HSTS and frame headers in production.
-- Swagger UI is disabled or protected in production via a config flag.
+- `src/app.setup.ts` owns this. Allowed origins come from `ALLOWED_ORIGINS` (exact origins, comma-separated; env
+  validation rejects wildcards and paths). With none configured: localhost origins in development, CORS off in
+  production. `X-Request-Id` is exposed to browsers. Never `*` together with `credentials: true`.
+- helmet sets security headers on every response; only `/docs` skips the CSP because Swagger UI needs inline
+  scripts. Traefik adds HSTS and frame headers in production.
+- Swagger UI follows `SWAGGER_ENABLED` (default: on outside production, off in production).
+- In production, env validation refuses to start with JWT secrets shorter than 32 characters, equal to each other,
+  or still containing sample placeholder text.
 
 ## Secrets & sensitive data
 

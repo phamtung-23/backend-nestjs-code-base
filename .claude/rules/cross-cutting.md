@@ -8,9 +8,11 @@ paths:
 
 ## Request ID & logging
 
-- Target (CLAUDE.md "Foundations status"): middleware takes `X-Request-Id` from the request when it's a valid
-  UUID, otherwise generates one; stores it in `AsyncLocalStorage`; echoes it as a response header and in the error
-  body; and includes it in every log line.
+- `requestIdMiddleware` (registered in `src/app.setup.ts`, before the body parser) always generates the id on the
+  server — never trust a client-supplied one, or callers could mix their log lines and audit rows with someone
+  else's — echoes it as the `X-Request-Id` response header, and stores it in `RequestContext` (AsyncLocalStorage). The error body carries it, and `AppLogger` appends `[req <id>]` to every log
+  line written during the request. Read it anywhere with `RequestContext.requestId()`; don't pass it through
+  function arguments.
 - Nest `Logger` with a context. Log events, not data dumps. Levels: `error` (5xx, failed jobs), `warn`
   (suspicious activity, auth failures), `log` (lifecycle), `debug` (dev detail).
 - Never log secrets or PII (security rule).

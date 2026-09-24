@@ -5,6 +5,7 @@ paths:
   - "backend/src/**/*.constants.ts"
   - "backend/src/common/**/*.ts"
   - "backend/src/main.ts"
+  - "backend/src/app.setup.ts"
 ---
 
 # API design
@@ -63,12 +64,14 @@ paths:
 
 ## List endpoints: pagination, filter, sort, search, fields, include
 
-Every list endpoint takes a query DTO extending the shared `ListQueryDto` from `src/common/query` (build it if
-missing — see `.claude/skills/new-resource/reference/foundations.md`).
+Every list endpoint takes a query DTO extending the shared `ListQueryDto` from `src/common/query`, and builds its
+Prisma arguments with `parseSort`, `buildSelect` and `buildSearch` from the same module (reference implementation:
+`.claude/skills/new-resource/reference/templates.md`). Detail endpoints that support `fields`/`include` take
+`ProjectionQueryDto`. Document list responses with `@ApiEnvelopeResponse(Dto, { paginated: true })`.
 
 | Param | Example | Rule |
 | --- | --- | --- |
-| `page`, `limit` | `?page=2&limit=20` | offset pagination; `page` ≥ 1 (default 1); `limit` 1–100 (default 20) |
+| `page`, `limit` | `?page=2&limit=20` | offset pagination; `page` 1–10 000 (default 1); `limit` 1–100 (default 20) |
 | `cursor`, `limit` | `?cursor=Y2t4...&limit=20` | cursor pagination for feeds/large tables; opaque base64url cursor |
 | `sort` | `?sort=-createdAt,name` | comma list, `-` = desc; only the resource's SORTABLE fields; `id` tiebreaker always appended |
 | `search` | `?search=john` | trimmed, 2–100 chars; case-insensitive `contains` over the SEARCHABLE fields |
@@ -80,6 +83,9 @@ missing — see `.claude/skills/new-resource/reference/foundations.md`).
   Use flat params.
 - Unknown `sort` / `fields` / `include` values → 400 with `errorCode: INVALID_QUERY_PARAM`. Never ignore them
   silently.
+- Every whitelist (FIELDS, SORTABLE, SEARCHABLE, INCLUDABLE) holds only columns the caller may see: sorting or
+  searching on a hidden column leaks it one comparison at a time. INCLUDABLE entries are `IncludeSpec`s with an
+  explicit `select` — never a nested `include`, which returns every column of the related model.
 - Offset meta: `{ "page": 2, "limit": 20, "total": 135, "totalPages": 7 }`.
   Cursor meta: `{ "limit": 20, "nextCursor": "..." | null, "hasMore": true }`.
 
@@ -96,7 +102,7 @@ export const USER_INCLUDABLE = {
 
 ## Swagger
 
-- Controller: `@ApiTags`. Every endpoint: `@ApiOperation`, its success response (`@ApiOkResponse` /
-  `@ApiCreatedResponse` / `@ApiNoContentResponse` with `type`), relevant error responses, and
-  `@ApiBearerAuth('JWT-auth')` when protected.
+- Controller: `@ApiTags`. Every endpoint: `@ApiOperation`, its success response (`@ApiEnvelopeResponse(Dto, ...)`,
+  or `@ApiNoContentResponse` for 204), its error responses (`@ApiErrorResponse(status, ...errorCodes)`), and
+  `@ApiBearerAuth('JWT-auth')` when protected. Both decorators live in `src/common/decorators`.
 - Every DTO property: `@ApiProperty` / `@ApiPropertyOptional` with an example.

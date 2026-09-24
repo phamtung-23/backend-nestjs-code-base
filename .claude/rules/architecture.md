@@ -23,7 +23,9 @@ modules/<name>/
   *.spec.ts                next to the file under test
 ```
 
-Cross-cutting code lives in `src/common/{constants,decorators,dto,filters,guards,helpers,interceptors,interfaces,query}`.
+Cross-cutting code lives in
+`src/common/{constants,context,decorators,dto,filters,guards,helpers,interceptors,interfaces,logger,middleware,pipes,query}`;
+app wiring in `src/app.setup.ts`; env declarations in `src/config/`.
 Only generic code goes there — nothing that knows about a specific module.
 
 ## Layering (dependencies point inward)
@@ -60,10 +62,13 @@ export interface MailSender {
 ## Configuration
 
 - Read config through `ConfigService` only — never `process.env` outside bootstrap/config files.
-- Required values use `getOrThrow`. All env vars get validated at startup (ConfigModule `validate`), and settings are
-  grouped with `registerAs` namespaces (e.g. `auth.accessTokenTtl`) — see CLAUDE.md "Foundations status".
+- Every env var is declared and validated in `src/config/env.validation.ts` (`EnvironmentVariables`, wired through
+  `ConfigModule.forRoot({ validate })`); the app refuses to start on invalid config. Validated values are typed
+  (numbers, booleans), so `ConfigService.get<number>('PORT')` returns a number. Required values also use
+  `getOrThrow` where they're read. Grouping settings with `registerAs` namespaces (e.g. `auth.accessTokenTtl`) is
+  still a target — see CLAUDE.md "Foundations status".
 - No magic numbers or strings in services: durations, limits and keys go into `<name>.constants.ts` or config.
-- A new env var goes to `.env.sample`, `backend/.env.example`, every `docker-compose*.yml` backend `environment`
+- A new env var goes to `EnvironmentVariables`, `.env.sample`, `backend/.env.example`, every `docker-compose*.yml` backend `environment`
   block, and the validation schema — in the same change.
 
 ## Code style

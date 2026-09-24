@@ -11,12 +11,17 @@ import { AuthModule } from './modules/auth/auth.module';
 import { HealthModule } from './modules/health/health.module';
 import { ResponseInterceptor } from './common/interceptors/response.interceptor';
 import { GlobalExceptionFilter } from './common/filters/global-exception.filter';
+import { validateEnv } from './config/env.validation';
 
 @Module({
   imports: [
     ConfigModule.forRoot({
       isGlobal: true,
       envFilePath: '.env',
+      validate: validateEnv,
+      // Read only validated values; otherwise an empty var dropped by
+      // validateEnv would come back as '' from process.env and skip its default
+      skipProcessEnv: true,
     }),
     ThrottlerModule.forRoot([
       {

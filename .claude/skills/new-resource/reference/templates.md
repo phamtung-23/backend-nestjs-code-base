@@ -5,8 +5,9 @@ fieldsets, a whitelisted include, ownership checks, optimistic locking and unit 
 tested, and exercised over HTTP against PostgreSQL. Copy it, then rename (`Article` → `Thing`, `articles` →
 `things`) and adapt the fields, filters and whitelists to the new resource.
 
-Prerequisites (CLAUDE.md "Foundations status"): error codes, transform helpers, the list query contract, the Swagger
-envelope decorator, and `@CurrentUser()` — see `foundations.md`. When `JwtAuthGuard` becomes global, drop the
+Prerequisites (CLAUDE.md "Foundations status"): error codes, transform helpers, the list query contract and the
+Swagger envelope/error decorators already exist in `backend/src/common`; `@CurrentUser()` is in `foundations.md`
+section 5 until the auth building blocks land. When `JwtAuthGuard` becomes global, drop the
 controller-level `@UseGuards(JwtAuthGuard)`.
 
 ## Prisma model (`backend/prisma/schema.prisma`)
@@ -47,6 +48,8 @@ Indexes follow the list queries: filter by author/status, sort by `createdAt`.
 `backend/src/modules/articles/articles.constants.ts`
 
 ```ts
+import { IncludeSpec } from '../../common/query';
+
 export const ARTICLE_SORTABLE = ['createdAt', 'updatedAt', 'title'] as const;
 export const ARTICLE_DEFAULT_SORT = '-createdAt';
 export const ARTICLE_SEARCHABLE = ['title', 'content'] as const;
@@ -64,7 +67,7 @@ export const ARTICLE_FIELDS = [
 
 // Embeddable via ?include= — nested selects keep columns explicit and let
 // Prisma batch the relation query (no N+1)
-export const ARTICLE_INCLUDABLE = {
+export const ARTICLE_INCLUDABLE: Record<string, IncludeSpec> = {
   author: { select: { id: true, firstName: true, lastName: true } },
 };
 
@@ -442,13 +445,12 @@ import {
 } from '@nestjs/common';
 import {
   ApiBearerAuth,
-  ApiConflictResponse,
   ApiNoContentResponse,
-  ApiNotFoundResponse,
   ApiOperation,
   ApiTags,
 } from '@nestjs/swagger';
 import { ApiEnvelopeResponse } from '../../common/decorators/api-envelope-response.decorator';
+import { ApiErrorResponse } from '../../common/decorators/api-error-response.decorator';
 import { ResponseHelper } from '../../common/helpers/response.helper';
 import { ProjectionQueryDto } from '../../common/query';
 import { CurrentUser } from '../auth/decorators/current-user.decorator';
@@ -469,6 +471,7 @@ export class ArticlesController {
 
   @ApiOperation({ summary: 'List articles' })
   @ApiEnvelopeResponse(ArticleResponseDto, { paginated: true })
+  @ApiErrorResponse(400, 'VALIDATION_FAILED', 'INVALID_QUERY_PARAM')
   @Get()
   async list(@Query() query: ListArticlesQueryDto) {
     const { items, total } = await this.articlesService.list(query);
@@ -483,7 +486,7 @@ export class ArticlesController {
 
   @ApiOperation({ summary: 'Get an article' })
   @ApiEnvelopeResponse(ArticleResponseDto)
-  @ApiNotFoundResponse({ description: 'ARTICLE_NOT_FOUND' })
+  @ApiErrorResponse(404, 'ARTICLE_NOT_FOUND')
   @Get(':id')
   async findOne(@Param('id') id: string, @Query() query: ProjectionQueryDto) {
     const article = await this.articlesService.findOne(id, query);
@@ -500,8 +503,8 @@ export class ArticlesController {
 
   @ApiOperation({ summary: 'Update an article (optimistic locking)' })
   @ApiEnvelopeResponse(ArticleResponseDto)
-  @ApiNotFoundResponse({ description: 'ARTICLE_NOT_FOUND' })
-  @ApiConflictResponse({ description: 'VERSION_CONFLICT' })
+  @ApiErrorResponse(404, 'ARTICLE_NOT_FOUND')
+  @ApiErrorResponse(409, 'VERSION_CONFLICT')
   @Patch(':id')
   async update(
     @Param('id') id: string,
@@ -514,7 +517,7 @@ export class ArticlesController {
 
   @ApiOperation({ summary: 'Delete an article' })
   @ApiNoContentResponse()
-  @ApiNotFoundResponse({ description: 'ARTICLE_NOT_FOUND' })
+  @ApiErrorResponse(404, 'ARTICLE_NOT_FOUND')
   @HttpCode(HttpStatus.NO_CONTENT)
   @Delete(':id')
   async remove(

@@ -18,9 +18,12 @@ Docker (multi-stage) + Traefik v3 · GitHub Actions
 ```text
 backend/                  NestJS app — run every yarn/npx command from here
   prisma/                 schema.prisma, migrations/ (immutable once committed), seed.ts
-  src/main.ts             bootstrap: trust proxy, CORS, ValidationPipe, URI versioning, Swagger at /docs
-  src/app.module.ts       global modules + APP_GUARD / APP_INTERCEPTOR / APP_FILTER
-  src/common/             generic building blocks (envelope, exception filter, helpers, ...)
+  src/main.ts             bootstrap: create app, AppLogger, setupApp, listen
+  src/app.setup.ts        app wiring: trust proxy, request id, helmet, CORS, ValidationPipe, versioning, Swagger
+  src/app.module.ts       global modules (ConfigModule + env validation) + APP_GUARD / APP_INTERCEPTOR / APP_FILTER
+  src/config/             env.validation.ts — every env var, validated at startup
+  src/common/             generic building blocks: constants, context, decorators, filters, helpers,
+                          interceptors, logger, middleware, pipes, query
   src/prisma/             PrismaService (global module)
   src/modules/<name>/     one folder per bounded context (auth, mail, health, ...)
 docker-compose.yml        base stack; docker-compose.override.yml is auto-loaded for local dev
@@ -70,6 +73,8 @@ build, tests with ≥95% coverage). In addition:
 The rules reference shared building blocks, and some don't exist yet. Before relying on a block marked ❌,
 build it with tests, following the referenced rule and
 `.claude/skills/new-resource/reference/foundations.md`, then update this table in the same change.
+`src/app.setup.ts` applies all app-level wiring (middleware, CORS, pipes, versioning, Swagger) for `main.ts` and
+future e2e tests.
 
 | Building block | Status | Rule |
 | --- | --- | --- |
@@ -78,13 +83,15 @@ build it with tests, following the referenced rule and
 | Global rate limit (`ThrottlerGuard`, in-memory storage) | ✅ (Redis storage ❌) | security |
 | Refresh-token rotation, separate secrets, `jti` | ✅ (tokens stored in plain text ❌) | security |
 | OTP attempt limit via conditional update | ✅ | security |
-| Error format with `errorCode`, `requestId`, Prisma error mapping, 5xx logging | ❌ | errors |
-| List query helpers: `ListQueryDto`, sort / fields / include / search parsing (`src/common/query`) | ❌ | api-design |
+| Error format with `errorCode` / `details` / `requestId`, Prisma error mapping, 5xx logging (`GlobalExceptionFilter`, `validationExceptionFactory`) | ✅ | errors |
+| List query helpers: `ListQueryDto`, `ProjectionQueryDto`, `parseSort` / `buildSelect` / `buildSearch` / `pageMeta` (`src/common/query`), DTO transform helpers | ✅ offset pagination (no module uses them yet); cursor helpers ❌ | api-design |
+| Swagger decorators for the envelope: `ApiEnvelopeResponse`, `ApiErrorResponse` | ✅ | api-design |
 | Secure-by-default auth: global `JwtAuthGuard` + `@Public()`, `@CurrentUser()` | ❌ | security |
 | RBAC: `@Roles()` + `RolesGuard`; `isActive` check | ❌ | security |
-| CORS from `ALLOWED_ORIGINS`, helmet, Swagger off in prod | ❌ | security |
-| Startup env validation + typed config namespaces | ❌ | architecture |
-| Request ID (`X-Request-Id`) + log correlation | ❌ | cross-cutting |
+| CORS from `ALLOWED_ORIGINS`, helmet, `SWAGGER_ENABLED` flag (`src/app.setup.ts`) | ✅ | security |
+| Startup env validation (`src/config/env.validation.ts`) | ✅ | architecture |
+| Typed config namespaces (`registerAs`) | ❌ (code reads `ConfigService.get('KEY')`) | architecture |
+| Request ID (`X-Request-Id`, `RequestContext`) + log correlation (`AppLogger`) | ✅ | cross-cutting |
 | Audit log (`AuditLog` model + `AuditService`) | ❌ | cross-cutting |
 | Idempotency (`@Idempotent()` + `IdempotencyInterceptor`) | ❌ | cross-cutting |
 | Repository layer | ❌ (auth calls Prisma directly) | architecture |
@@ -101,3 +108,8 @@ build it with tests, following the referenced rule and
   change/reset doesn't revoke refresh tokens.
 - `refresh_tokens.token` has both `@unique` and a redundant `@@index`.
 - `GET /v1` returns "Hello World!" (starter leftover).
+- `MailService` logs recipient email addresses in full; it depends on nodemailer directly instead of a port.
+- `OTP_EXPIRY_MINUTES`, `OTP_CODE_LENGTH` and `OTP_RATE_LIMIT_MINUTES` are passed by compose and `.env.sample` but
+  never read; OTP expiry is hardcoded to 10 minutes in `AuthService`.
+- `ResponseInterceptor` treats any object with `status` and `message` keys as an envelope; return data through
+  `ResponseHelper` or DTOs that don't have both keys.
