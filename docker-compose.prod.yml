@@ -16,13 +16,8 @@ services:
     restart: always
     volumes:
       - redis_data:/data
-    healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-      start_period: 10s
-    command: redis-server --appendonly yes
+    # command (--requirepass) and the authenticated healthcheck are inherited
+    # from docker-compose.yml; don't override them here or Redis runs without auth.
     security_opt:
       - no-new-privileges:true
     deploy:

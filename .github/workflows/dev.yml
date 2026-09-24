@@ -53,7 +53,7 @@ jobs:
 
       - name: Run ESLint
         working-directory: backend
-        run: yarn lint
+        run: yarn lint:check
 
       - name: Check code formatting
         working-directory: backend
@@ -78,6 +78,11 @@ jobs:
         working-directory: backend
         run: yarn install --frozen-lockfile
 
+      # Also generates the Prisma client and type-checks files the tests don't import
+      - name: Build
+        working-directory: backend
+        run: yarn build
+
       - name: Run tests with coverage
         working-directory: backend
         run: yarn test:cov
@@ -100,7 +105,7 @@ jobs:
           port: ${{ secrets.STAGING_PORT || 22 }}
           script: |
             set -e
-            cd /home/ecoupon/ecoupon-be
+            cd /home/backend-base
 
             git fetch origin
             git checkout dev

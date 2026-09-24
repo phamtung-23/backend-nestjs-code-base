@@ -3,6 +3,7 @@ import {
   NotFoundException,
   UnauthorizedException,
 } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 import { JwtService } from '@nestjs/jwt';
 import * as bcrypt from 'bcryptjs';
 import { AuthService } from './auth.service';
@@ -30,6 +31,7 @@ describe('AuthService', () => {
   let prisma: any;
   let jwt: jest.Mocked<JwtService>;
   let mail: jest.Mocked<MailService>;
+  let config: ConfigService;
 
   beforeEach(() => {
     jest.clearAllMocks();
@@ -67,7 +69,14 @@ describe('AuthService', () => {
       sendOtpEmail: jest.fn().mockResolvedValue(undefined),
     } as unknown as jest.Mocked<MailService>;
 
-    service = new AuthService(prisma as PrismaService, jwt, mail);
+    config = {
+      get: jest.fn((key: string) =>
+        key === 'OTP_MAX_ATTEMPTS' ? '3' : undefined,
+      ),
+      getOrThrow: jest.fn().mockReturnValue('refresh-secret'),
+    } as unknown as ConfigService;
+
+    service = new AuthService(prisma as PrismaService, jwt, mail, config);
   });
 
   describe('validateUser', () => {
@@ -98,6 +107,10 @@ describe('AuthService', () => {
       const user = buildUser();
       const out = await service.login(user as any, 'ua', 'ip');
       expect(jwt.sign).toHaveBeenCalledTimes(2);
+      expect(jwt.sign).toHaveBeenCalledWith(
+        { sub: 'user-1', type: 'refresh', jti: expect.any(String) },
+        { secret: 'refresh-secret', expiresIn: '7d' },
+      );
       expect(prisma.refreshToken.create).toHaveBeenCalledWith({
         data: expect.objectContaining({
           userId: 'user-1',
@@ -126,8 +139,17 @@ describe('AuthService', () => {
       expect(prisma.user.create).toHaveBeenCalledWith({
         data: expect.objectContaining({ password: 'hashed-pw' }),
       });
-      expect(prisma.otp.create).toHaveBeenCalledTimes(1);
-      expect(mail.sendVerificationOtp).toHaveBeenCalledTimes(1);
+      expect(prisma.otp.create).toHaveBeenCalledWith({
+        data: expect.objectContaining({
+          code: expect.stringMatching(/^\d{6}$/),
+          type: 'VERIFICATION',
+          userId: 'user-1',
+        }),
+      });
+      expect(mail.sendVerificationOtp).toHaveBeenCalledWith(
+        'a@b.com',
+        prisma.otp.create.mock.calls[0][0].data.code,
+      );
       expect(out.user).not.toHaveProperty('password');
     });
 
@@ -142,13 +164,13 @@ describe('AuthService', () => {
   describe('verifyEmail', () => {
     it('marks email verified on valid OTP', async () => {
       prisma.user.findUnique.mockResolvedValue(buildUser());
-      prisma.otp.findFirst.mockResolvedValue({ id: 'otp-1' });
-      prisma.otp.update.mockResolvedValue({});
+      prisma.otp.findFirst.mockResolvedValue({ id: 'otp-1', code: '123456' });
+      prisma.otp.updateMany.mockResolvedValue({ count: 1 });
       prisma.user.update.mockResolvedValue({});
 
       const out = await service.verifyEmail('a@b.com', '123456');
-      expect(prisma.otp.update).toHaveBeenCalledWith({
-        where: { id: 'otp-1' },
+      expect(prisma.otp.updateMany).toHaveBeenLastCalledWith({
+        where: { id: 'otp-1', isUsed: false },
         data: { isUsed: true },
       });
       expect(prisma.user.update).toHaveBeenCalledWith({
@@ -235,12 +257,12 @@ describe('AuthService', () => {
   describe('resetPassword', () => {
     it('updates password on valid OTP', async () => {
       prisma.user.findUnique.mockResolvedValue(buildUser());
-      prisma.otp.findFirst.mockResolvedValue({ id: 'otp-1' });
+      prisma.otp.findFirst.mockResolvedValue({ id: 'otp-1', code: '123456' });
+      prisma.otp.updateMany.mockResolvedValue({ count: 1 });
       (mockedBcrypt.hash as jest.Mock).mockResolvedValue('new-hash');
-      prisma.otp.update.mockResolvedValue({});
       prisma.user.update.mockResolvedValue({});
 
-      const out = await service.resetPassword('a@b.com', '123', 'newpw');
+      const out = await service.resetPassword('a@b.com', '123456', 'newpw');
       expect(prisma.user.update).toHaveBeenCalledWith({
         where: { id: 'user-1' },
         data: { password: 'new-hash' },
@@ -327,12 +349,17 @@ describe('AuthService', () => {
     it('logs in user on valid OTP', async () => {
       const user = buildUser();
       prisma.user.findUnique.mockResolvedValue(user);
-      prisma.otp.findFirst.mockResolvedValue({ id: 'otp-1' });
-      prisma.otp.update.mockResolvedValue({});
+      prisma.otp.findFirst.mockResolvedValue({ id: 'otp-1', code: '123456' });
+      prisma.otp.updateMany.mockResolvedValue({ count: 1 });
       prisma.user.update.mockResolvedValue({});
       prisma.refreshToken.create.mockResolvedValue({});
 
-      const out = await service.verifyOtp('a@b.com', '123', 'ua', 'ip');
+      const out = await service.verifyOtp('a@b.com', '123456', 'ua', 'ip');
+      expect(prisma.otp.findFirst).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: expect.objectContaining({ userId: 'user-1', type: 'LOGIN' }),
+        }),
+      );
       expect(out.access_token).toBeDefined();
       expect(out.refresh_token).toBeDefined();
     });
@@ -349,6 +376,62 @@ describe('AuthService', () => {
       prisma.otp.findFirst.mockResolvedValue(null);
       await expect(service.verifyOtp('a@b.com', 'bad')).rejects.toBeInstanceOf(
         BadRequestException,
+      );
+    });
+  });
+
+  describe('OTP attempt limiting', () => {
+    beforeEach(() => {
+      prisma.user.findUnique.mockResolvedValue(buildUser());
+      prisma.otp.findFirst.mockResolvedValue({ id: 'otp-1', code: '123456' });
+    });
+
+    it('counts a wrong code as an attempt without consuming the OTP', async () => {
+      prisma.otp.updateMany.mockResolvedValue({ count: 1 });
+
+      await expect(
+        service.verifyOtp('a@b.com', '000000'),
+      ).rejects.toBeInstanceOf(BadRequestException);
+      expect(prisma.otp.updateMany).toHaveBeenCalledTimes(1);
+      expect(prisma.otp.updateMany).toHaveBeenCalledWith({
+        where: { id: 'otp-1', isUsed: false, attempts: { lt: 3 } },
+        data: { attempts: { increment: 1 } },
+      });
+    });
+
+    it('rejects the correct code once attempts are exhausted', async () => {
+      prisma.otp.updateMany.mockResolvedValueOnce({ count: 0 });
+
+      await expect(
+        service.verifyOtp('a@b.com', '123456'),
+      ).rejects.toBeInstanceOf(BadRequestException);
+      expect(prisma.otp.updateMany).toHaveBeenCalledTimes(1);
+      expect(prisma.refreshToken.create).not.toHaveBeenCalled();
+    });
+
+    it('rejects when a concurrent request already consumed the OTP', async () => {
+      prisma.otp.updateMany
+        .mockResolvedValueOnce({ count: 1 })
+        .mockResolvedValueOnce({ count: 0 });
+
+      await expect(
+        service.verifyOtp('a@b.com', '123456'),
+      ).rejects.toBeInstanceOf(BadRequestException);
+      expect(prisma.refreshToken.create).not.toHaveBeenCalled();
+    });
+
+    it('defaults to 5 attempts when OTP_MAX_ATTEMPTS is not set', async () => {
+      (config.get as jest.Mock).mockReturnValue(undefined);
+      service = new AuthService(prisma as PrismaService, jwt, mail, config);
+      prisma.otp.updateMany.mockResolvedValue({ count: 1 });
+
+      await expect(
+        service.verifyOtp('a@b.com', '000000'),
+      ).rejects.toBeInstanceOf(BadRequestException);
+      expect(prisma.otp.updateMany).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: expect.objectContaining({ attempts: { lt: 5 } }),
+        }),
       );
     });
   });
@@ -382,13 +465,25 @@ describe('AuthService', () => {
       user: buildUser(),
     });
 
+    const refreshPayload = { sub: 'user-1', type: 'refresh' } as any;
+
     it('rotates tokens when refresh token is valid', async () => {
-      jwt.verify.mockReturnValue({ sub: 'user-1' } as any);
+      jwt.verify.mockReturnValue(refreshPayload);
       prisma.refreshToken.findUnique.mockResolvedValue(baseStored());
       prisma.refreshToken.update.mockResolvedValue({});
       prisma.refreshToken.create.mockResolvedValue({});
 
       const out = await service.refreshAccessToken('rt', 'ua', 'ip');
+      expect(jwt.verify).toHaveBeenCalledWith('rt', {
+        secret: 'refresh-secret',
+      });
+      expect(prisma.refreshToken.create).toHaveBeenCalledWith({
+        data: expect.objectContaining({
+          userId: 'user-1',
+          userAgent: 'ua',
+          ipAddress: 'ip',
+        }),
+      });
       expect(out.access_token).toBe('signed-token');
       expect(out.refresh_token).toBe('signed-token');
       expect(prisma.refreshToken.update).toHaveBeenCalledWith({
@@ -406,8 +501,16 @@ describe('AuthService', () => {
       );
     });
 
+    it('rejects a token that is not a refresh token', async () => {
+      jwt.verify.mockReturnValue({ sub: 'user-1' } as any);
+      await expect(service.refreshAccessToken('rt')).rejects.toBeInstanceOf(
+        UnauthorizedException,
+      );
+      expect(prisma.refreshToken.findUnique).not.toHaveBeenCalled();
+    });
+
     it('throws when token not stored', async () => {
-      jwt.verify.mockReturnValue({} as any);
+      jwt.verify.mockReturnValue(refreshPayload);
       prisma.refreshToken.findUnique.mockResolvedValue(null);
       await expect(service.refreshAccessToken('rt')).rejects.toBeInstanceOf(
         UnauthorizedException,
@@ -415,7 +518,7 @@ describe('AuthService', () => {
     });
 
     it('throws when token revoked', async () => {
-      jwt.verify.mockReturnValue({} as any);
+      jwt.verify.mockReturnValue(refreshPayload);
       prisma.refreshToken.findUnique.mockResolvedValue({
         ...baseStored(),
         isRevoked: true,
@@ -426,7 +529,7 @@ describe('AuthService', () => {
     });
 
     it('throws when token expired', async () => {
-      jwt.verify.mockReturnValue({} as any);
+      jwt.verify.mockReturnValue(refreshPayload);
       prisma.refreshToken.findUnique.mockResolvedValue({
         ...baseStored(),
         expiresAt: new Date(Date.now() - 1000),

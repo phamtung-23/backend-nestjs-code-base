@@ -2,11 +2,16 @@ import { NestFactory } from '@nestjs/core';
 import { ValidationPipe, VersioningType } from '@nestjs/common';
 import { SwaggerModule, DocumentBuilder } from '@nestjs/swagger';
 import { ConfigService } from '@nestjs/config';
+import { NestExpressApplication } from '@nestjs/platform-express';
 import { AppModule } from './app.module';
 
 async function bootstrap() {
-  const app = await NestFactory.create(AppModule);
+  const app = await NestFactory.create<NestExpressApplication>(AppModule);
   const configService = app.get(ConfigService);
+
+  // Traefik sits in front of the app. Trust one proxy hop so req.ip (used by
+  // the throttler) is the real client IP rather than Traefik's.
+  app.set('trust proxy', 1);
 
   // Enable CORS
   app.enableCors({
@@ -28,7 +33,8 @@ async function bootstrap() {
   const apiPrefix = configService.get<string>('API_PREFIX') ?? '';
   const apiVersion = configService.get<string>('API_VERSION') ?? '1';
   if (apiPrefix) {
-    app.setGlobalPrefix(apiPrefix);
+    // /health stays at the root for the Docker healthchecks
+    app.setGlobalPrefix(apiPrefix, { exclude: ['health'] });
   }
   app.enableVersioning({
     type: VersioningType.URI,

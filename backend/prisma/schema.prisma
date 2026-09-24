@@ -44,6 +44,7 @@ model Otp {
   code      String
   expiresAt DateTime
   isUsed    Boolean  @default(false)
+  attempts  Int      @default(0)
   type      OtpType  @default(LOGIN)
   createdAt DateTime @default(now())
 

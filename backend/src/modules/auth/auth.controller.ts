@@ -70,6 +70,7 @@ export class AuthController {
     description: 'User registered successfully',
     type: MessageResponseDto,
   })
+  @RateLimit(5, 60000) // sends an email
   @Post('register')
   async register(@Body(new ValidationPipe()) registerDto: RegisterDto) {
     return this.authService.register(registerDto);
@@ -82,6 +83,7 @@ export class AuthController {
     description: 'Email verified successfully',
     type: MessageResponseDto,
   })
+  @RateLimit(5, 60000) // OTP guessing
   @Post('verify-email')
   async verifyEmail(
     @Body(new ValidationPipe()) verifyEmailDto: VerifyEmailDto,
@@ -99,6 +101,7 @@ export class AuthController {
     description: 'Verification email sent successfully',
     type: MessageResponseDto,
   })
+  @RateLimit(3, 60000) // sends an email
   @Post('resend-verification')
   async resendVerificationEmail(
     @Body(new ValidationPipe()) sendOtpDto: SendOtpDto,
@@ -128,6 +131,7 @@ export class AuthController {
     description: 'Password reset successfully',
     type: MessageResponseDto,
   })
+  @RateLimit(5, 60000) // OTP guessing
   @Post('reset-password')
   async resetPassword(
     @Body(new ValidationPipe()) resetPasswordDto: ResetPasswordDto,
@@ -176,6 +180,7 @@ export class AuthController {
     description: 'OTP verified and user logged in',
     type: AuthResponseDto,
   })
+  @RateLimit(5, 60000) // OTP guessing
   @Post('verify-otp')
   async verifyOtp(
     @Body(new ValidationPipe()) verifyOtpDto: VerifyOtpDto,
