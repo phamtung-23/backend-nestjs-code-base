@@ -8,7 +8,7 @@ build whatever a task needs that is still ❌, **with unit tests**, then flip it
 | Piece | File |
 | --- | --- |
 | Error codes + status fallback map | `backend/src/common/constants/error-codes.ts` |
-| DTO transform helpers (`trimString`, `normalizeEmail`, `toArray`, `toBoolean`) | `backend/src/common/helpers/transform.helpers.ts` |
+| DTO transform helpers (`trimString`, `normalizeEmail`, `toArray`, `toBoolean`, `toDate`, `toEndOfDay`) | `backend/src/common/helpers/transform.helpers.ts` |
 | List query contract (`ListQueryDto`, `ProjectionQueryDto`, `parseSort`, `buildSelect` + `IncludeSpec`, `buildSearch`, `pageMeta`) | `backend/src/common/query/` |
 | Pagination meta with `totalPages` | `ResponseHelper.paginated` in `backend/src/common/helpers/response.helper.ts` |
 | Swagger decorators (`ApiEnvelopeResponse`, `ApiErrorResponse`) | `backend/src/common/decorators/` |
@@ -16,6 +16,10 @@ build whatever a task needs that is still ❌, **with unit tests**, then flip it
 | Request ID + log correlation | `backend/src/common/middleware/request-id.middleware.ts`, `backend/src/common/context/request-context.ts`, `backend/src/common/logger/app.logger.ts` |
 | Env validation | `backend/src/config/env.validation.ts` |
 | CORS, helmet, `SWAGGER_ENABLED`, pipes, versioning | `backend/src/app.setup.ts` |
+| Audit log (`AuditService.log(entry, tx)`, `AuditAction`, admin list endpoint) | `backend/src/modules/audit/` |
+| Idempotency (`@Idempotent()`) | `backend/src/common/idempotency/` |
+| Shared Redis client (`REDIS_CLIENT`) + Redis throttler storage | `backend/src/redis/`, `backend/src/common/throttler/` |
+| e2e harness (`createTestApp`, `FakeMailbox`, testcontainers setup) | `backend/test/utils/`, `backend/test/setup/` |
 
 Section 6 lists pieces that are specified but not written yet.
 
@@ -36,7 +40,3 @@ Implement each one following its rule, with tests, then update CLAUDE.md.
 | Piece | Where | Spec |
 | --- | --- | --- |
 | Typed config namespaces | `src/config/*.config.ts` with `registerAs` | group settings (`auth`, `redis`, `mail`, ...) and inject them with `ConfigType<typeof authConfig>` instead of `ConfigService.get('KEY')`. |
-| Audit log | `modules/audit/` (`AuditService.log(entry, tx?)`) + `AuditLog` model + migration | `.claude/rules/cross-cutting.md`. |
-| Idempotency | `common/decorators/idempotent.decorator.ts` + `common/interceptors/idempotency.interceptor.ts` (Redis via `CACHE_MANAGER` or a dedicated client with `SET NX`) | `.claude/rules/cross-cutting.md`. |
-| Redis throttler storage | `ThrottlerModule.forRootAsync` with a Redis storage adapter | needed before running more than one instance. |
-| e2e setup | `backend/test/jest-e2e.json`, `test/*.e2e-spec.ts` | `.claude/rules/testing.md`; bootstrap the app with `setupApp(app)` from `src/app.setup.ts` so tests match production wiring. |

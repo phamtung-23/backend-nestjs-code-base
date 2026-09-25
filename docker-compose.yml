@@ -53,7 +53,10 @@ services:
       timeout: 5s
       retries: 5
       start_period: 10s
-    command: ["sh", "-c", "redis-server --appendonly yes --requirepass \"$$REDIS_PASSWORD\""]
+    # maxmemory stays below the 256M container limit of the prod/dev files (room
+    # for AOF rewrites); every key has a TTL, so volatile-lru evicts instead of
+    # letting writes fail or the kernel kill Redis
+    command: ["sh", "-c", "redis-server --appendonly yes --maxmemory 192mb --maxmemory-policy volatile-lru --requirepass \"$$REDIS_PASSWORD\""]
 
   backend:
     build:

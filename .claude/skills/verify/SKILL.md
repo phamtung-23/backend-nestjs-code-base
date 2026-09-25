@@ -12,6 +12,8 @@ everything at once.
 2. `yarn format:check` — if it fails, run `yarn format`, re-run the check, and list the files it changed.
 3. `yarn build`
 4. `yarn test:cov` — all suites pass and the 95% global coverage threshold holds.
+5. `yarn test:e2e` when HTTP behavior, auth, persistence or wiring changed (needs Docker; starts Postgres/Redis
+   containers). If Docker isn't available, say so instead of skipping silently.
 
 Extra checks when relevant:
 
@@ -30,5 +32,6 @@ Extra checks when relevant:
 | format | ✅ / ❌ | files reformatted |
 | build | ✅ / ❌ | first compiler errors |
 | tests | ✅ / ❌ | passed/total, coverage %, failing test names |
+| e2e | ✅ / ❌ / not run | passed/total, or why it wasn't run |
 
 Quote the relevant failure output. Never mark a step ✅ that you didn't run or that failed.

@@ -82,8 +82,13 @@ export function buildSelect<S>(
 ): S {
   const select: Record<string, unknown> = { id: true };
 
+  // `id` is always selected, so asking for it is allowed but changes nothing
   const fields = query.fields
-    ? assertAllowed('fields', splitList(query.fields), spec.fields)
+    ? assertAllowed(
+        'fields',
+        splitList(query.fields).filter((field) => field !== 'id'),
+        spec.fields,
+      )
     : spec.fields;
   for (const field of fields) select[field] = true;
 

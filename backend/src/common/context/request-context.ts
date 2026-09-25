@@ -1,7 +1,9 @@
 import { AsyncLocalStorage } from 'node:async_hooks';
 
-interface RequestStore {
+export interface RequestStore {
   requestId: string;
+  ipAddress?: string;
+  userAgent?: string;
 }
 
 const storage = new AsyncLocalStorage<RequestStore>();
@@ -15,5 +17,10 @@ export const RequestContext = {
 
   requestId(): string | undefined {
     return storage.getStore()?.requestId;
+  },
+
+  // Undefined outside a request (e.g. scheduled jobs)
+  current(): RequestStore | undefined {
+    return storage.getStore();
   },
 };

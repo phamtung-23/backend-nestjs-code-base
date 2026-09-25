@@ -11,6 +11,7 @@ import { ClientMetaParam } from '../../common/decorators/client-meta.decorator';
 import { ApiEnvelopeResponse } from '../../common/decorators/api-envelope-response.decorator';
 import { ApiErrorResponse } from '../../common/decorators/api-error-response.decorator';
 import { ResponseHelper } from '../../common/helpers/response.helper';
+import { Idempotent } from '../../common/idempotency/idempotent.decorator';
 import { ClientMeta } from '../../common/interfaces/client-meta.interface';
 import { UserResponseDto } from '../users/dto/user-response.dto';
 import { PublicUser } from '../users/interfaces/user.interface';
@@ -44,12 +45,23 @@ const ONE_MINUTE = 60_000;
 export class AuthController {
   constructor(private readonly authService: AuthService) {}
 
-  @ApiOperation({ summary: 'Register a new account' })
+  @ApiOperation({
+    summary: 'Register a new account',
+    description:
+      'Send an Idempotency-Key to retry safely: a retry replays the first response instead of answering 409.',
+  })
   @ApiEnvelopeResponse(UserResponseDto, { status: HttpStatus.CREATED })
-  @ApiErrorResponse(400, 'VALIDATION_FAILED')
-  @ApiErrorResponse(409, AuthErrorCode.EMAIL_TAKEN)
+  @ApiErrorResponse(400, 'VALIDATION_FAILED', 'IDEMPOTENCY_KEY_INVALID')
+  @ApiErrorResponse(
+    409,
+    AuthErrorCode.EMAIL_TAKEN,
+    'IDEMPOTENCY_KEY_IN_PROGRESS',
+  )
+  @ApiErrorResponse(422, 'IDEMPOTENCY_KEY_REUSED')
+  @ApiErrorResponse(503, 'SERVICE_UNAVAILABLE')
   @Public()
   @RateLimit(5, ONE_MINUTE)
+  @Idempotent()
   @Post('register')
   async register(@Body() dto: RegisterDto) {
     const user = await this.authService.register(dto);

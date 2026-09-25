@@ -8,9 +8,12 @@ import {
 } from '@nestjs/common';
 import { OtpType, Prisma } from '@prisma/client';
 import * as bcrypt from 'bcryptjs';
+import { randomUUID } from 'node:crypto';
 import { isPrismaError } from '../../common/helpers/prisma.helpers';
 import { ClientMeta } from '../../common/interfaces/client-meta.interface';
 import { PrismaService } from '../../prisma/prisma.service';
+import { AuditAction, AuditEntity } from '../audit/audit.constants';
+import { AuditService } from '../audit/audit.service';
 import { MailService } from '../mail/mail.service';
 import {
   PublicUser,
@@ -50,6 +53,7 @@ export class AuthService {
     private readonly otpService: OtpService,
     private readonly tokenService: TokenService,
     private readonly mailService: MailService,
+    private readonly auditService: AuditService,
   ) {}
 
   async register(dto: RegisterDto): Promise<PublicUser> {
@@ -73,6 +77,15 @@ export class AuthService {
         const code = await this.otpService.issue(
           user.id,
           OtpType.VERIFICATION,
+          tx,
+        );
+        await this.auditService.log(
+          {
+            action: AuditAction.USER_REGISTERED,
+            entity: AuditEntity.USER,
+            entityId: user.id,
+            actorId: user.id,
+          },
           tx,
         );
         return { user, code };
@@ -99,7 +112,7 @@ export class AuthService {
   }
 
   async login(dto: LoginDto, client: ClientMeta): Promise<AuthSession> {
-    const record = await this.checkCredentials(dto.email, dto.password);
+    const record = await this.checkCredentials(dto.email, dto.password, true);
     const { password: verifiedHash, ...user } = record;
     // Checked only after the password matched, so it reveals nothing to
     // strangers. It also stops someone who registered another person's email
@@ -121,7 +134,7 @@ export class AuthService {
       if (current?.password !== verifiedHash || !current.isActive) {
         return null;
       }
-      return this.startSession(user, client, tx);
+      return this.startSession(user, client, tx, 'password');
     });
     if (!session) {
       throw this.invalidCredentials();
@@ -134,7 +147,8 @@ export class AuthService {
   // someone else registered first would make that person's password usable;
   // the owner takes such an account over with a password reset instead.
   async verifyEmail(dto: VerifyEmailDto): Promise<void> {
-    const user = await this.checkCredentials(dto.email, dto.password);
+    // Wrong passwords are audited like failed logins: this is a password check too
+    const user = await this.checkCredentials(dto.email, dto.password, true);
     if (user.isEmailVerified) {
       throw this.invalidCode();
     }
@@ -150,6 +164,15 @@ export class AuthService {
       );
       if (consumed) {
         await this.usersService.markEmailVerified(user.id, tx);
+        await this.auditService.log(
+          {
+            action: AuditAction.USER_EMAIL_VERIFIED,
+            entity: AuditEntity.USER,
+            entityId: user.id,
+            actorId: user.id,
+          },
+          tx,
+        );
       }
       return consumed;
     });
@@ -219,6 +242,15 @@ export class AuthService {
         }
         // Whoever knew the old password is signed out everywhere
         await this.tokenService.revokeAllForUser(user.id, tx);
+        await this.auditService.log(
+          {
+            action: AuditAction.USER_PASSWORD_RESET,
+            entity: AuditEntity.USER,
+            entityId: user.id,
+            actorId: user.id,
+          },
+          tx,
+        );
       }
       return consumed;
     });
@@ -256,7 +288,16 @@ export class AuthService {
       }
       await this.usersService.setPassword(userId, passwordHash, tx);
       await this.tokenService.revokeAllForUser(userId, tx);
-      return this.tokenService.issue(record, client, tx);
+      await this.auditService.log(
+        {
+          action: AuditAction.USER_PASSWORD_CHANGED,
+          entity: AuditEntity.USER,
+          entityId: userId,
+          actorId: userId,
+        },
+        tx,
+      );
+      return this.openSession(record, client, tx, 'password_change');
     });
   }
 
@@ -299,7 +340,7 @@ export class AuthService {
         dto.otpCode,
         tx,
       );
-      return consumed ? this.startSession(user, client, tx) : null;
+      return consumed ? this.startSession(user, client, tx, 'code') : null;
     });
     if (!session) {
       throw this.invalidCode();
@@ -317,8 +358,27 @@ export class AuthService {
 
   async logoutAll(userId: string): Promise<void> {
     await this.prisma.$transaction(async (tx) => {
-      await this.usersService.lockForUpdate(userId, tx);
-      await this.tokenService.revokeAllForUser(userId, tx);
+      if (!(await this.usersService.lockForUpdate(userId, tx))) {
+        return; // deleted meanwhile
+      }
+      const revokedTokens = await this.tokenService.revokeAllForUser(
+        userId,
+        tx,
+      );
+      // Repeated calls with nothing left to revoke would only add noise rows
+      if (revokedTokens === 0) {
+        return;
+      }
+      await this.auditService.log(
+        {
+          action: AuditAction.USER_SESSIONS_REVOKED,
+          entity: AuditEntity.USER,
+          entityId: userId,
+          actorId: userId,
+          metadata: { revokedTokens },
+        },
+        tx,
+      );
     });
   }
 
@@ -326,10 +386,34 @@ export class AuthService {
     user: PublicUser,
     client: ClientMeta,
     tx: Prisma.TransactionClient,
+    method: 'password' | 'code',
   ): Promise<AuthSession> {
     const updated = await this.usersService.recordLogin(user.id, tx);
-    const tokens = await this.tokenService.issue(updated, client, tx);
+    const tokens = await this.openSession(updated, client, tx, method);
     return { ...tokens, user: updated };
+  }
+
+  // A new refresh token family, recorded so later session.ended /
+  // session.reuse_detected entries point at a session the trail knows
+  private async openSession(
+    user: Pick<PublicUser, 'id' | 'email' | 'role'>,
+    client: ClientMeta,
+    tx: Prisma.TransactionClient,
+    method: 'password' | 'code' | 'password_change',
+  ): Promise<AuthTokens> {
+    const familyId = randomUUID();
+    const tokens = await this.tokenService.issue(user, client, tx, familyId);
+    await this.auditService.log(
+      {
+        action: AuditAction.SESSION_STARTED,
+        entity: AuditEntity.SESSION,
+        entityId: familyId,
+        actorId: user.id,
+        metadata: { method },
+      },
+      tx,
+    );
+    return tokens;
   }
 
   // Null while the account is rate limited for this code type (OtpService)
@@ -346,12 +430,26 @@ export class AuthService {
   private async checkCredentials(
     email: string,
     password: string,
+    auditFailures = false,
   ): Promise<UserWithPassword> {
     const record = await this.usersService.findWithPasswordByEmail(email);
     const passwordMatches = await bcrypt.compare(
       password,
       record?.password ?? DUMMY_PASSWORD_HASH,
     );
+    if (record && !passwordMatches && auditFailures) {
+      // In the background, so a wrong password for an existing account isn't
+      // slower than one for an unknown email
+      const userId = record.id;
+      this.runInBackground(() =>
+        this.auditService.log({
+          action: AuditAction.USER_LOGIN_FAILED,
+          entity: AuditEntity.USER,
+          entityId: userId,
+          metadata: { reason: 'wrong_password' },
+        }),
+      );
+    }
     if (!record || !passwordMatches) {
       throw this.invalidCredentials();
     }

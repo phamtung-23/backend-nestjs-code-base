@@ -10,8 +10,8 @@ paths:
 
 - The global `ValidationPipe` in `src/app.setup.ts` (`whitelist`, `forbidNonWhitelisted`, `transform`,
   `exceptionFactory: validationExceptionFactory`) is the only validation pipe. Don't add `new ValidationPipe()` per
-  parameter. Reusable `@Transform` functions (`trimString`, `normalizeEmail`, `toArray`, `toBoolean`) live in
-  `src/common/helpers/transform.helpers.ts`.
+  parameter. Reusable `@Transform` functions (`trimString`, `normalizeEmail`, `toArray`, `toBoolean`, `toDate`,
+  `toEndOfDay`) live in `src/common/helpers/transform.helpers.ts`.
 - One DTO per operation: `CreateUserDto`, `UpdateUserDto extends PartialType(CreateUserDto)`,
   `ListUsersQueryDto extends ListQueryDto`, `UserResponseDto`. Import `PartialType` / `PickType` / `OmitType`
   from `@nestjs/swagger` so the docs follow.
@@ -29,7 +29,8 @@ paths:
 | Boolean (query) | `@Transform(({ value }) => value === 'true' \|\| value === true)` `@IsBoolean()` — `@Type(() => Boolean)` turns `"false"` into `true` |
 | Enum | `@IsEnum(PrismaEnum)` |
 | ID | `@IsString()` `@Matches(/^c[a-z0-9]{24}$/)` for cuid, `@IsUUID()` for UUID |
-| Date | `@IsISO8601()`, or `@Type(() => Date)` `@IsDate()` |
+| Date (query filter) | `@Transform(toDate)` (or `toEndOfDay` for an inclusive upper bound) + `@IsDate()`: accepts `2026-01-01` or a timestamp with `Z`/offset, rejects impossible days and anything else |
+| Date (body) | `@IsISO8601({ strict: true })` |
 | Array | `@IsArray()` `@ArrayMaxSize(n)` + item validators with `{ each: true }` |
 | Nested object | `@ValidateNested({ each: true })` `@Type(() => ChildDto)` |
 | Multi-value query | `@Transform(({ value }) => (Array.isArray(value) ? value : [value]))` + `@IsArray()` |

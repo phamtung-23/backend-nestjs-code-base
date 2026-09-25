@@ -23,8 +23,10 @@ backend/                  NestJS app — run every yarn/npx command from here
   src/app.module.ts       global modules (ConfigModule + env validation) + APP_GUARD / APP_INTERCEPTOR / APP_FILTER
   src/config/             env.validation.ts — every env var, validated at startup
   src/common/             generic building blocks: constants, context, decorators, filters, helpers,
-                          interceptors, logger, middleware, pipes, query
+                          idempotency, interceptors, logger, middleware, pipes, query, throttler
   src/prisma/             PrismaService (global module)
+  src/redis/              shared Redis client (REDIS_CLIENT, global) for rate limiting and idempotency
+  test/                   e2e suite: real AppModule + Postgres/Redis via testcontainers (needs Docker)
   src/modules/<name>/     one folder per bounded context (auth, mail, health, ...)
 docker-compose.yml        base stack; docker-compose.override.yml is auto-loaded for local dev
 docker-compose.{dev,prod,prod-ip}.yml   dev server / production / IP-only production overrides
@@ -38,6 +40,7 @@ traefik/                  static + dynamic Traefik config per environment (strip
 | --- | --- |
 | Dev server | `yarn start:dev` |
 | Quality gate | `yarn lint:check && yarn format:check && yarn build && yarn test:cov` (or the `/verify` skill) |
+| e2e tests | `yarn test:e2e` — starts Postgres + Redis containers, needs Docker running |
 | Prisma client / validate | `npx prisma generate` · `npx prisma validate` |
 | Migrations | `yarn db:migrate:dev` (dev, needs DB) · `yarn db:migrate` (deploy) — see `/db-migration` skill |
 | Seed | `yarn db:seed` |
@@ -46,10 +49,11 @@ traefik/                  static + dynamic Traefik config per environment (strip
 ## Definition of done
 
 Before reporting a code task as finished, run the quality gate and report the real results (lint, format,
-build, tests with ≥95% coverage). In addition:
+build, tests with ≥95% coverage), plus `yarn test:e2e` when HTTP behavior changed. In addition:
 
 - Schema changed → a new migration exists and was reviewed (`/db-migration`).
-- Endpoint added/changed → Swagger decorators and DTO docs updated; run the `api-standards-reviewer` agent.
+- Endpoint added/changed → Swagger decorators and DTO docs updated, an e2e test in `backend/test` covers it; run the
+  `api-standards-reviewer` agent.
 - Auth, guards, secrets, CORS or rate limits touched → run the `security-reviewer` agent.
 - Prisma queries, transactions or schema touched → run the `database-reviewer` agent.
 - New env var → added to `.env.sample`, `backend/.env.example`, every `docker-compose*.yml` backend
@@ -80,12 +84,12 @@ future e2e tests.
 | --- | --- | --- |
 | Response envelope (`ResponseInterceptor`, `ResponseHelper`) | ✅ (detects envelopes heuristically) | api-design |
 | URI versioning, `/health` (version-neutral, DB ping) | ✅ | api-design |
-| Global rate limit (`ThrottlerGuard`, in-memory storage) | ✅ (Redis storage ❌) | security |
+| Global rate limit (`ThrottlerGuard`, Redis storage shared by instances, memory fallback) | ✅ | security |
 | Refresh tokens: separate secret, `jti`, SHA-256 hash at rest, atomic rotation, families + reuse detection, revoked on password change/reset | ✅ | security |
 | Email verification required for password login | ✅ | security |
 | OTP attempt limit via conditional update | ✅ | security |
 | Error format with `errorCode` / `details` / `requestId`, Prisma error mapping, 5xx logging (`GlobalExceptionFilter`, `validationExceptionFactory`) | ✅ | errors |
-| List query helpers: `ListQueryDto`, `ProjectionQueryDto`, `parseSort` / `buildSelect` / `buildSearch` / `pageMeta` (`src/common/query`), DTO transform helpers | ✅ offset pagination (no module uses them yet); cursor helpers ❌ | api-design |
+| List query helpers: `ListQueryDto`, `ProjectionQueryDto`, `parseSort` / `buildSelect` / `buildSearch` / `pageMeta` (`src/common/query`), DTO transform helpers | ✅ offset pagination (first user: `modules/audit`); cursor helpers ❌ | api-design |
 | Swagger decorators for the envelope: `ApiEnvelopeResponse`, `ApiErrorResponse` | ✅ | api-design |
 | Secure-by-default auth: global `JwtAuthGuard` + `@Public()`, `@CurrentUser()`, `@ClientMetaParam()` | ✅ | security |
 | RBAC: `@Roles()` + `RolesGuard`; `isActive` enforced on every request | ✅ | security |
@@ -93,11 +97,11 @@ future e2e tests.
 | Startup env validation (`src/config/env.validation.ts`) | ✅ | architecture |
 | Typed config namespaces (`registerAs`) | ❌ (code reads `ConfigService.get('KEY')`) | architecture |
 | Request ID (`X-Request-Id`, `RequestContext`) + log correlation (`AppLogger`) | ✅ | cross-cutting |
-| Audit log (`AuditLog` model + `AuditService`) | ❌ | cross-cutting |
-| Idempotency (`@Idempotent()` + `IdempotencyInterceptor`) | ❌ | cross-cutting |
+| Audit log (`AuditLog` model, global `AuditService.log(entry, tx)`, `GET /v1/audit-logs` for admins) | ✅ | cross-cutting |
+| Idempotency (`@Idempotent()` + `IdempotencyInterceptor`, Redis) | ✅ | cross-cutting |
 | Repository layer (`users`, auth `otp` / `refresh-token` repositories) | ✅ | architecture |
-| Scheduled housekeeping (`@nestjs/schedule`, `AuthCleanupTask`, batched deletes) | ✅ | database |
-| e2e test setup (`backend/test`) | ❌ | testing |
+| Scheduled housekeeping (`@nestjs/schedule`, `AuthCleanupTask`, `AuditRetentionTask`, batched deletes) | ✅ | database |
+| e2e test setup (`backend/test`, testcontainers, `createTestApp`, `FakeMailbox`) | ✅ | testing |
 
 ## Known deviations (legacy — fix when touching, never copy)
 

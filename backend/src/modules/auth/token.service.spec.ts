@@ -5,6 +5,8 @@ import { Prisma, RefreshToken, UserRole } from '@prisma/client';
 import { createHash } from 'node:crypto';
 import { ClientMeta } from '../../common/interfaces/client-meta.interface';
 import { PrismaService } from '../../prisma/prisma.service';
+import { AuditAction, AuditEntity } from '../audit/audit.constants';
+import { AuditService } from '../audit/audit.service';
 import { PublicUser } from '../users/interfaces/user.interface';
 import { UsersService } from '../users/users.service';
 import { AuthErrorCode, REFRESH_REUSE_GRACE_MS } from './auth.constants';
@@ -96,6 +98,7 @@ describe('TokenService', () => {
   let jwtService: jest.Mocked<JwtService>;
   let repository: jest.Mocked<RefreshTokenRepository>;
   let usersService: jest.Mocked<UsersService>;
+  let auditService: jest.Mocked<AuditService>;
   let config: ConfigService;
   let loggerWarn: jest.SpyInstance;
   let service: TokenService;
@@ -106,6 +109,7 @@ describe('TokenService', () => {
       jwtService,
       repository,
       usersService,
+      auditService,
       config,
     );
 
@@ -160,6 +164,10 @@ describe('TokenService', () => {
       lockForUpdate: jest.fn().mockResolvedValue(true),
       findById: jest.fn(),
     } as unknown as jest.Mocked<UsersService>;
+
+    auditService = {
+      log: jest.fn().mockResolvedValue(undefined),
+    } as unknown as jest.Mocked<AuditService>;
 
     loggerWarn = jest
       .spyOn(Logger.prototype, 'warn')
@@ -312,6 +320,7 @@ describe('TokenService', () => {
         repository.create,
       );
       expect(repository.revokeFamily).not.toHaveBeenCalled();
+      expect(auditService.log).not.toHaveBeenCalled();
       expect(result).toEqual({
         accessToken: 'access-token',
         refreshToken: 'refresh-token',
@@ -392,6 +401,7 @@ describe('TokenService', () => {
           expect(prisma.$transaction).not.toHaveBeenCalled();
           expect(repository.revokeFamily).not.toHaveBeenCalled();
           expect(loggerWarn).not.toHaveBeenCalled();
+          expect(auditService.log).not.toHaveBeenCalled();
           expect(jwtService.sign).not.toHaveBeenCalled();
         },
       );
@@ -411,7 +421,18 @@ describe('TokenService', () => {
           );
           expect(prisma.$transaction).toHaveBeenCalledTimes(1);
           expect(repository.revokeFamily).toHaveBeenCalledWith('family-1', tx);
-          expectLockedBefore(repository.revokeFamily);
+          expect(auditService.log).toHaveBeenCalledWith(
+            {
+              action: AuditAction.SESSION_REUSE_DETECTED,
+              entity: AuditEntity.SESSION,
+              entityId: 'family-1',
+              // Whoever presented the reused token isn't necessarily the owner
+              actorId: null,
+              metadata: { userId: 'user-1', revokedTokens: 2 },
+            },
+            tx,
+          );
+          expectLockedBefore(repository.revokeFamily, auditService.log);
           expect(repository.revokeIfActive).not.toHaveBeenCalled();
           expect(jwtService.sign).not.toHaveBeenCalled();
           expect(repository.create).not.toHaveBeenCalled();
@@ -447,6 +468,7 @@ describe('TokenService', () => {
         );
         expect(repository.revokeFamily).toHaveBeenCalledTimes(1);
         expect(loggerWarn).not.toHaveBeenCalled();
+        expect(auditService.log).not.toHaveBeenCalled();
       });
     });
 
@@ -502,8 +524,37 @@ describe('TokenService', () => {
       );
       expect(prisma.$transaction).toHaveBeenCalledTimes(1);
       expect(repository.revokeFamily).toHaveBeenCalledWith('family-1', tx);
-      expectLockedBefore(repository.revokeFamily);
+      expect(auditService.log).toHaveBeenCalledWith(
+        {
+          action: AuditAction.SESSION_ENDED,
+          entity: AuditEntity.SESSION,
+          entityId: 'family-1',
+          actorId: 'user-1',
+          metadata: { userId: 'user-1', revokedTokens: 1 },
+        },
+        tx,
+      );
+      expectLockedBefore(repository.revokeFamily, auditService.log);
       expect(loggerWarn).not.toHaveBeenCalled();
+    });
+
+    it('does not audit a logout that revoked nothing (session already ended)', async () => {
+      repository.findByHash.mockResolvedValue(
+        buildStoredToken({ isRevoked: true, revokedAt: ago(DAY_MS) }),
+      );
+      repository.revokeFamily.mockResolvedValue(0);
+
+      await expect(service.revoke('refresh-token')).resolves.toBeUndefined();
+      expect(auditService.log).not.toHaveBeenCalled();
+    });
+
+    it('fails the logout when its audit entry cannot be written, so the revocation rolls back with it', async () => {
+      const error = new Error('audit insert failed');
+      repository.findByHash.mockResolvedValue(buildStoredToken());
+      repository.revokeFamily.mockResolvedValue(1);
+      auditService.log.mockRejectedValue(error);
+
+      await expect(service.revoke('refresh-token')).rejects.toBe(error);
     });
 
     it('still ends the session when given a token that was already rotated', async () => {
@@ -522,6 +573,7 @@ describe('TokenService', () => {
       expect(prisma.$transaction).not.toHaveBeenCalled();
       expect(usersService.lockForUpdate).not.toHaveBeenCalled();
       expect(repository.revokeFamily).not.toHaveBeenCalled();
+      expect(auditService.log).not.toHaveBeenCalled();
     });
   });
 

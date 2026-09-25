@@ -6,6 +6,10 @@ import { ThrottlerGuard, ThrottlerModule } from '@nestjs/throttler';
 import { APP_INTERCEPTOR, APP_FILTER, APP_GUARD } from '@nestjs/core';
 import { createKeyv } from '@keyv/redis';
 import { PrismaModule } from './prisma/prisma.module';
+import { RedisModule } from './redis/redis.module';
+import { REDIS_CLIENT, RedisClient } from './redis/redis.constants';
+import { RedisThrottlerStorage } from './common/throttler/redis-throttler.storage';
+import { AuditModule } from './modules/audit/audit.module';
 import { AuthModule } from './modules/auth/auth.module';
 import { HealthModule } from './modules/health/health.module';
 import { JwtAuthGuard } from './modules/auth/guards/jwt-auth.guard';
@@ -24,12 +28,20 @@ import { validateEnv } from './config/env.validation';
       // validateEnv would come back as '' from process.env and skip its default
       skipProcessEnv: true,
     }),
-    ThrottlerModule.forRoot([
-      {
-        ttl: 60000, // 1 minute
-        limit: 100, // per IP; sensitive routes set stricter limits via @RateLimit
-      },
-    ]),
+    RedisModule,
+    ThrottlerModule.forRootAsync({
+      inject: [REDIS_CLIENT],
+      useFactory: (redis: RedisClient) => ({
+        throttlers: [
+          {
+            ttl: 60000, // 1 minute
+            limit: 100, // per IP; sensitive routes set stricter limits via @RateLimit
+          },
+        ],
+        // Shared across instances; falls back to memory if Redis is down
+        storage: new RedisThrottlerStorage(redis),
+      }),
+    }),
     CacheModule.registerAsync({
       isGlobal: true,
       inject: [ConfigService],
@@ -48,6 +60,7 @@ import { validateEnv } from './config/env.validation';
     }),
     ScheduleModule.forRoot(),
     PrismaModule,
+    AuditModule,
     AuthModule,
     HealthModule,
   ],

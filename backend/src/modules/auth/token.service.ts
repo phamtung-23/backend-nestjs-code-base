@@ -6,6 +6,8 @@ import { createHash, randomUUID } from 'node:crypto';
 import { ClientMeta } from '../../common/interfaces/client-meta.interface';
 import { PrismaService } from '../../prisma/prisma.service';
 import { PublicUser } from '../users/interfaces/user.interface';
+import { AuditAction, AuditEntity } from '../audit/audit.constants';
+import { AuditService } from '../audit/audit.service';
 import { UsersService } from '../users/users.service';
 import {
   AuthErrorCode,
@@ -31,6 +33,7 @@ export class TokenService {
     private readonly jwtService: JwtService,
     private readonly refreshTokenRepository: RefreshTokenRepository,
     private readonly usersService: UsersService,
+    private readonly auditService: AuditService,
     configService: ConfigService,
   ) {
     this.refreshSecret = configService.getOrThrow<string>('JWT_REFRESH_SECRET');
@@ -121,7 +124,11 @@ export class TokenService {
       hashToken(refreshToken),
     );
     if (stored) {
-      await this.revokeFamily(stored.userId, stored.familyId);
+      await this.revokeFamily(
+        stored.userId,
+        stored.familyId,
+        AuditAction.SESSION_ENDED,
+      );
     }
   }
 
@@ -149,7 +156,11 @@ export class TokenService {
     if (revokedFor <= REFRESH_REUSE_GRACE_MS) {
       return;
     }
-    const revoked = await this.revokeFamily(stored.userId, stored.familyId);
+    const revoked = await this.revokeFamily(
+      stored.userId,
+      stored.familyId,
+      AuditAction.SESSION_REUSE_DETECTED,
+    );
     if (revoked > 0) {
       this.logger.warn(
         `Refresh token reuse for user ${stored.userId}: revoked ${revoked} token(s) of that session`,
@@ -158,11 +169,35 @@ export class TokenService {
   }
 
   // Under the user lock, like every other revocation, so a rotation that is
-  // inserting the family's next token can't slip past it
-  private revokeFamily(userId: string, familyId: string): Promise<number> {
+  // inserting the family's next token can't slip past it. Audited only when
+  // something was actually revoked.
+  private revokeFamily(
+    userId: string,
+    familyId: string,
+    action:
+      | typeof AuditAction.SESSION_ENDED
+      | typeof AuditAction.SESSION_REUSE_DETECTED,
+  ): Promise<number> {
     return this.prisma.$transaction(async (tx) => {
       await this.usersService.lockForUpdate(userId, tx);
-      return this.refreshTokenRepository.revokeFamily(familyId, tx);
+      const revoked = await this.refreshTokenRepository.revokeFamily(
+        familyId,
+        tx,
+      );
+      if (revoked > 0) {
+        await this.auditService.log(
+          {
+            action,
+            entity: AuditEntity.SESSION,
+            entityId: familyId,
+            // A reused token was presented by someone who isn't necessarily the owner
+            actorId: action === AuditAction.SESSION_ENDED ? userId : null,
+            metadata: { userId, revokedTokens: revoked },
+          },
+          tx,
+        );
+      }
+      return revoked;
     });
   }
 

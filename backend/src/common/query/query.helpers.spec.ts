@@ -66,6 +66,13 @@ describe('buildSelect', () => {
     });
   });
 
+  it('accepts id in ?fields= even though FIELDS leaves it out', () => {
+    expect(buildSelect({ fields: 'id,title' }, PROJECTION)).toEqual({
+      id: true,
+      title: true,
+    });
+  });
+
   it('rejects fields outside the whitelist', () => {
     expectInvalidParam(
       () => buildSelect({ fields: 'title,password' }, PROJECTION),

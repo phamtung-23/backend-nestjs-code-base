@@ -96,3 +96,29 @@ model RefreshToken {
   @@index([expiresAt])
   @@map("refresh_tokens")
 }
+
+// Append-only record of security-relevant and data-changing actions. No
+// foreign keys: entries must outlive the users and rows they mention.
+model AuditLog {
+  id        String   @id @default(cuid())
+  actorId   String?
+  // <entity>.<past_tense_verb>, e.g. user.password_changed
+  action    String
+  entity    String
+  entityId  String?
+  // Changed fields only: { field: { from, to } }, never secrets
+  changes   Json?
+  // Context that isn't a change, e.g. { method: 'password' }
+  metadata  Json?
+  ipAddress String?
+  userAgent String?
+  requestId String?
+  createdAt DateTime @default(now())
+
+  @@index([createdAt])
+  @@index([actorId, createdAt])
+  // Serves ?entityId= alone (a session's familyId) and with ?entity=
+  @@index([entityId, createdAt])
+  @@index([action, createdAt])
+  @@map("audit_logs")
+}

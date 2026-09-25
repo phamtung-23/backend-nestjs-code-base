@@ -54,9 +54,16 @@ paths:
 - Global `ThrottlerGuard` (`APP_GUARD`), default 100 req/min per IP; `trust proxy` = 1 because Traefik sits in
   front and overwrites `X-Forwarded-For`. If another proxy/CDN is ever added in front of Traefik, raise the hop count
   in `src/app.setup.ts`, or every client shares one rate-limit bucket.
+- Only Traefik may reach the backend. Anything else that can (another container on `traefik-network`, a frontend's
+  server-side renderer forwarding headers) chooses its own `X-Forwarded-For`, and with it the client IP used for
+  rate limits, idempotency scopes and audit entries. Keep the host port on 127.0.0.1 and never forward a
+  client-supplied `X-Forwarded-For`.
 - Stricter `@RateLimit(limit, ttlMs)` on login, register, OTP send/verify, forgot/reset password, and anything
   that sends email/SMS or is expensive. `@SkipThrottle()` only on health/metrics.
-- Multiple instances need Redis-backed throttler storage (CLAUDE.md "Foundations status").
+- Counters live in Redis (`RedisThrottlerStorage`, a Lua fixed window) so limits hold across instances. If Redis
+  is unavailable or doesn't answer within 500 ms (`withTimeout` — node-redis has no reply timeout of its own), it
+  falls back to per-instance memory (logged once) instead of failing or hanging requests. Each switch starts fresh
+  counters, a documented trade-off.
 
 ## CORS, headers, docs
 

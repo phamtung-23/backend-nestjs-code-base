@@ -24,8 +24,9 @@ modules/<name>/
 ```
 
 Cross-cutting code lives in
-`src/common/{constants,context,decorators,dto,filters,guards,helpers,interceptors,interfaces,logger,middleware,pipes,query}`;
-app wiring in `src/app.setup.ts`; env declarations in `src/config/`.
+`src/common/{constants,context,decorators,dto,filters,guards,helpers,idempotency,interceptors,interfaces,logger,middleware,pipes,query,throttler}`;
+the shared Redis client in `src/redis/` (`REDIS_CLIENT`, `withTimeout`); app wiring in `src/app.setup.ts`; env
+declarations in `src/config/`.
 Only generic code goes there — nothing that knows about a specific module.
 
 ## Layering (dependencies point inward)

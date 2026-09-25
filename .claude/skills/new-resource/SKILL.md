@@ -44,14 +44,17 @@ Create `backend/src/modules/<name>/` by adapting `reference/templates.md`:
   `ResponseHelper`; full Swagger decorators; `@RateLimit` for expensive or sensitive routes
 - `<name>.module.ts` — controller + service + repository, export the service; register it in `AppModule`
 
-If the audit-log or idempotency foundations exist, write an audit entry inside the transaction for every mutation and
-put `@Idempotent()` on create/side-effect endpoints.
+Write an audit entry (`auditService.log(entry, tx)`; module actions as `<Module>AuditAction` in `<name>.constants.ts`)
+inside the transaction of every create/update/delete, and put `@Idempotent()` on create and side-effect endpoints.
 
 ## 5. Tests
 
 `<name>.service.spec.ts` in the style of the template: every branch, including invalid sort/fields/include (400
 `INVALID_QUERY_PARAM`), not found / not owner (404), stale version (409), and exact repository arguments. Use the
 `test-writer` agent if the surface is large.
+
+Add `backend/test/<name>.e2e-spec.ts`: happy paths, ownership/roles (404/403), validation (400), list query params
+(pagination meta, invalid sort → 400), optimistic locking (409).
 
 ## 6. Verify and review
 

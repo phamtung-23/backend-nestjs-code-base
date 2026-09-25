@@ -5,7 +5,7 @@ name: Dev CI/CD Pipeline
 #
 # Pull Request (validate ONLY - NO deployment):
 #   1. Lint code (blocks merge if failed)
-#   2. Run tests with coverage (blocks merge if failed)
+#   2. Build, unit tests with coverage, e2e tests (blocks merge if failed)
 #
 # Push to dev (after merge):
 #   1. SSH to staging server
@@ -86,6 +86,11 @@ jobs:
       - name: Run tests with coverage
         working-directory: backend
         run: yarn test:cov
+
+      # Real Postgres and Redis via testcontainers (Docker is available on the runner)
+      - name: Run e2e tests
+        working-directory: backend
+        run: yarn test:e2e
 
   # ============================================================
   # DEPLOY (push to dev only)

@@ -23,7 +23,7 @@ const MAX_LIST_PARAM_LENGTH = 500;
 // ?fields= and ?include= — also usable on GET /things/{id}
 export class ProjectionQueryDto {
   @ApiPropertyOptional({
-    example: 'id,title,createdAt',
+    example: 'id,createdAt',
     description: 'Sparse fieldset (comma-separated, whitelisted per resource)',
     maxLength: MAX_LIST_PARAM_LENGTH,
   })
@@ -74,7 +74,7 @@ export class ListQueryDto extends ProjectionQueryDto {
   limit: number = DEFAULT_PAGE_LIMIT;
 
   @ApiPropertyOptional({
-    example: '-createdAt,title',
+    example: '-createdAt',
     description: 'Comma-separated fields; prefix with - for descending',
     maxLength: MAX_LIST_PARAM_LENGTH,
   })

@@ -1,8 +1,8 @@
 # Resource module templates (example: `articles`)
 
 A complete, working resource: an `Article` owned by a `User`, with list pagination, filters, search, sort, sparse
-fieldsets, a whitelisted include, ownership checks, optimistic locking and unit tests. It was compiled, linted, unit
-tested, and exercised over HTTP against PostgreSQL. Copy it, then rename (`Article` → `Thing`, `articles` →
+fieldsets, a whitelisted include, ownership checks, optimistic locking, audit entries, an idempotent create, unit
+tests and an e2e test. It was compiled, linted, unit tested, and run with its e2e test against PostgreSQL and Redis. Copy it, then rename (`Article` → `Thing`, `articles` →
 `things`) and adapt the fields, filters and whitelists to the new resource.
 
 Prerequisites: all in the repo — error codes, transform helpers, the list query contract and the Swagger decorators
@@ -73,6 +73,15 @@ export const ARTICLE_INCLUDABLE: Record<string, IncludeSpec> = {
 export const ArticleErrorCode = {
   NOT_FOUND: 'ARTICLE_NOT_FOUND',
 } as const;
+
+// Audit actions of this module (core ones live in AuditAction)
+export const ArticleAuditAction = {
+  CREATED: 'article.created',
+  UPDATED: 'article.updated',
+  DELETED: 'article.deleted',
+} as const;
+
+export const ARTICLE_AUDIT_ENTITY = 'article';
 ```
 
 ### create-article.dto.ts
@@ -140,7 +149,7 @@ export class UpdateArticleDto extends PartialType(CreateArticleDto) {
 ```ts
 import { ApiPropertyOptional } from '@nestjs/swagger';
 import { ArticleStatus } from '@prisma/client';
-import { Transform, Type } from 'class-transformer';
+import { Transform } from 'class-transformer';
 import {
   ArrayMaxSize,
   IsArray,
@@ -148,9 +157,13 @@ import {
   IsEnum,
   IsOptional,
   IsString,
-  MaxLength,
+  Matches,
 } from 'class-validator';
-import { toArray } from '../../../common/helpers/transform.helpers';
+import {
+  toArray,
+  toDate,
+  toEndOfDay,
+} from '../../../common/helpers/transform.helpers';
 import { ListQueryDto } from '../../../common/query';
 
 export class ListArticlesQueryDto extends ListQueryDto {
@@ -162,21 +175,24 @@ export class ListArticlesQueryDto extends ListQueryDto {
   @IsEnum(ArticleStatus, { each: true })
   status?: ArticleStatus[];
 
-  @ApiPropertyOptional()
+  @ApiPropertyOptional({ example: 'cmufs79e80009o4gpupls7i3y' })
   @IsOptional()
   @IsString()
-  @MaxLength(30)
+  @Matches(/^c[a-z0-9]{24}$/, { message: 'authorId must be a user id' })
   authorId?: string;
 
   @ApiPropertyOptional({ example: '2026-01-01' })
   @IsOptional()
-  @Type(() => Date)
+  @Transform(toDate)
   @IsDate()
   createdFrom?: Date;
 
-  @ApiPropertyOptional({ example: '2026-12-31' })
+  @ApiPropertyOptional({
+    example: '2026-12-31',
+    description: 'Inclusive; a bare date covers the whole day (UTC)',
+  })
   @IsOptional()
-  @Type(() => Date)
+  @Transform(toEndOfDay)
   @IsDate()
   createdTo?: Date;
 }
@@ -317,12 +333,17 @@ import {
   parseSort,
   ProjectionQueryDto,
 } from '../../common/query';
+import { PrismaService } from '../../prisma/prisma.service';
+import { changedFields } from '../audit/audit.helpers';
+import { AuditService } from '../audit/audit.service';
 import {
+  ARTICLE_AUDIT_ENTITY,
   ARTICLE_DEFAULT_SORT,
   ARTICLE_FIELDS,
   ARTICLE_INCLUDABLE,
   ARTICLE_SEARCHABLE,
   ARTICLE_SORTABLE,
+  ArticleAuditAction,
   ArticleErrorCode,
 } from './articles.constants';
 import { ArticlesRepository } from './articles.repository';
@@ -334,7 +355,11 @@ const PROJECTION = { fields: ARTICLE_FIELDS, includable: ARTICLE_INCLUDABLE };
 
 @Injectable()
 export class ArticlesService {
-  constructor(private readonly articlesRepository: ArticlesRepository) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly articlesRepository: ArticlesRepository,
+    private readonly auditService: AuditService,
+  ) {}
 
   async list(query: ListArticlesQueryDto) {
     const where: Prisma.ArticleWhereInput = {
@@ -371,48 +396,100 @@ export class ArticlesService {
   }
 
   async create(authorId: string, dto: CreateArticleDto) {
-    const article = await this.articlesRepository.create({
-      title: dto.title,
-      content: dto.content,
-      status: dto.status,
-      authorId,
+    // The row and its audit entry commit together
+    const article = await this.prisma.$transaction(async (tx) => {
+      const created = await this.articlesRepository.create(
+        {
+          title: dto.title,
+          content: dto.content,
+          status: dto.status,
+          authorId,
+        },
+        tx,
+      );
+      await this.auditService.log(
+        {
+          action: ArticleAuditAction.CREATED,
+          entity: ARTICLE_AUDIT_ENTITY,
+          entityId: created.id,
+          actorId: authorId,
+        },
+        tx,
+      );
+      return created;
     });
     return this.findOne(article.id);
   }
 
   async update(id: string, userId: string, dto: UpdateArticleDto) {
-    await this.assertOwner(id, userId);
+    const patch = {
+      title: dto.title,
+      content: dto.content,
+      status: dto.status,
+    };
 
-    const updated = await this.articlesRepository.updateIfVersion(
-      id,
-      dto.version,
-      { title: dto.title, content: dto.content, status: dto.status },
-    );
-    if (!updated) {
-      throw new ConflictException({
-        errorCode: ErrorCode.VERSION_CONFLICT,
-        message: 'The article was modified by someone else; reload and retry',
-      });
-    }
+    await this.prisma.$transaction(async (tx) => {
+      const before = await this.findOwned(id, userId, tx);
+      const updated = await this.articlesRepository.updateIfVersion(
+        id,
+        dto.version,
+        patch,
+        tx,
+      );
+      if (!updated) {
+        throw new ConflictException({
+          errorCode: ErrorCode.VERSION_CONFLICT,
+          message: 'The article was modified by someone else; reload and retry',
+        });
+      }
+      await this.auditService.log(
+        {
+          action: ArticleAuditAction.UPDATED,
+          entity: ARTICLE_AUDIT_ENTITY,
+          entityId: id,
+          actorId: userId,
+          changes: changedFields(before, patch),
+        },
+        tx,
+      );
+    });
     return this.findOne(id);
   }
 
   async remove(id: string, userId: string): Promise<void> {
-    await this.assertOwner(id, userId);
-    if (!(await this.articlesRepository.delete(id))) {
-      throw this.notFound();
-    }
+    await this.prisma.$transaction(async (tx) => {
+      await this.findOwned(id, userId, tx);
+      if (!(await this.articlesRepository.delete(id, tx))) {
+        throw this.notFound();
+      }
+      await this.auditService.log(
+        {
+          action: ArticleAuditAction.DELETED,
+          entity: ARTICLE_AUDIT_ENTITY,
+          entityId: id,
+          actorId: userId,
+        },
+        tx,
+      );
+    });
   }
 
-  // Foreign resources look missing (404) so their existence doesn't leak
-  private async assertOwner(id: string, userId: string): Promise<void> {
-    const article = await this.articlesRepository.findById(id, {
-      id: true,
-      authorId: true,
-    });
+  // Foreign resources look missing (404) so their existence doesn't leak.
+  // Returns the fields an update may change, for the audit diff.
+  private async findOwned(
+    id: string,
+    userId: string,
+    tx: Prisma.TransactionClient,
+  ) {
+    const article = await this.articlesRepository.findById(
+      id,
+      { id: true, authorId: true, title: true, content: true, status: true },
+      tx,
+    );
     if (!article || article.authorId !== userId) {
       throw this.notFound();
     }
+    return article;
   }
 
   private notFound() {
@@ -450,6 +527,7 @@ import {
 import { ApiEnvelopeResponse } from '../../common/decorators/api-envelope-response.decorator';
 import { ApiErrorResponse } from '../../common/decorators/api-error-response.decorator';
 import { ResponseHelper } from '../../common/helpers/response.helper';
+import { Idempotent } from '../../common/idempotency/idempotent.decorator';
 import { ProjectionQueryDto } from '../../common/query';
 import { CurrentUser } from '../auth/decorators/current-user.decorator';
 import { PublicUser } from '../users/interfaces/user.interface';
@@ -491,6 +569,11 @@ export class ArticlesController {
 
   @ApiOperation({ summary: 'Create an article' })
   @ApiEnvelopeResponse(ArticleResponseDto, { status: HttpStatus.CREATED })
+  @ApiErrorResponse(400, 'VALIDATION_FAILED', 'IDEMPOTENCY_KEY_INVALID')
+  @ApiErrorResponse(409, 'IDEMPOTENCY_KEY_IN_PROGRESS')
+  @ApiErrorResponse(422, 'IDEMPOTENCY_KEY_REUSED')
+  @ApiErrorResponse(503, 'SERVICE_UNAVAILABLE')
+  @Idempotent()
   @Post()
   async create(@CurrentUser() user: PublicUser, @Body() dto: CreateArticleDto) {
     const article = await this.articlesService.create(user.id, dto);
@@ -553,16 +636,30 @@ import {
   ConflictException,
   NotFoundException,
 } from '@nestjs/common';
+import { Prisma } from '@prisma/client';
+import { PrismaService } from '../../prisma/prisma.service';
+import { AuditService } from '../audit/audit.service';
 import { ArticlesRepository } from './articles.repository';
 import { ArticlesService } from './articles.service';
 import { ListArticlesQueryDto } from './dto/list-articles-query.dto';
 
 describe('ArticlesService', () => {
+  const tx = { tx: true } as unknown as Prisma.TransactionClient;
   let repository: jest.Mocked<ArticlesRepository>;
+  let audit: jest.Mocked<AuditService>;
   let service: ArticlesService;
 
   const listQuery = (overrides: Partial<ListArticlesQueryDto> = {}) =>
     Object.assign(new ListArticlesQueryDto(), overrides);
+  const owned = (overrides = {}) =>
+    ({
+      id: 'a1',
+      authorId: 'u1',
+      title: 'Old title',
+      content: 'Body',
+      status: 'DRAFT',
+      ...overrides,
+    }) as never;
 
   beforeEach(() => {
     repository = {
@@ -572,7 +669,15 @@ describe('ArticlesService', () => {
       updateIfVersion: jest.fn(),
       delete: jest.fn(),
     } as unknown as jest.Mocked<ArticlesRepository>;
-    service = new ArticlesService(repository);
+    audit = {
+      log: jest.fn().mockResolvedValue(undefined),
+    } as unknown as jest.Mocked<AuditService>;
+    const prisma = {
+      $transaction: jest.fn((callback: (client: typeof tx) => unknown) =>
+        callback(tx),
+      ),
+    } as unknown as PrismaService;
+    service = new ArticlesService(prisma, repository, audit);
   });
 
   describe('list', () => {
@@ -629,12 +734,35 @@ describe('ArticlesService', () => {
     });
   });
 
+  describe('create', () => {
+    it('creates the article and its audit entry in one transaction', async () => {
+      repository.create.mockResolvedValue({ id: 'a1' } as never);
+      repository.findById.mockResolvedValue({ id: 'a1' } as never);
+
+      await service.create('u1', { title: 'Hello', content: 'Body' });
+
+      expect(repository.create).toHaveBeenCalledWith(
+        { title: 'Hello', content: 'Body', status: undefined, authorId: 'u1' },
+        tx,
+      );
+      expect(audit.log).toHaveBeenCalledWith(
+        {
+          action: 'article.created',
+          entity: 'article',
+          entityId: 'a1',
+          actorId: 'u1',
+        },
+        tx,
+      );
+    });
+  });
+
   describe('update', () => {
     const dto = { version: 3, title: 'New title' };
 
-    it('updates with the client version and returns the fresh article', async () => {
+    it('updates with the client version and audits only the changed fields', async () => {
       repository.findById
-        .mockResolvedValueOnce({ id: 'a1', authorId: 'u1' } as never)
+        .mockResolvedValueOnce(owned())
         .mockResolvedValueOnce({ id: 'a1', title: 'New title' } as never);
       repository.updateIfVersion.mockResolvedValue(true);
 
@@ -642,38 +770,208 @@ describe('ArticlesService', () => {
         id: 'a1',
         title: 'New title',
       });
-      expect(repository.updateIfVersion).toHaveBeenCalledWith('a1', 3, {
-        title: 'New title',
-        content: undefined,
-        status: undefined,
-      });
+      expect(repository.updateIfVersion).toHaveBeenCalledWith(
+        'a1',
+        3,
+        { title: 'New title', content: undefined, status: undefined },
+        tx,
+      );
+      expect(audit.log).toHaveBeenCalledWith(
+        expect.objectContaining({
+          action: 'article.updated',
+          changes: { title: { from: 'Old title', to: 'New title' } },
+        }),
+        tx,
+      );
     });
 
     it('returns 404 for an article owned by someone else', async () => {
-      repository.findById.mockResolvedValue({
-        id: 'a1',
-        authorId: 'other',
-      } as never);
+      repository.findById.mockResolvedValue(owned({ authorId: 'other' }));
 
       await expect(service.update('a1', 'u1', dto)).rejects.toMatchObject({
         constructor: NotFoundException,
         response: { errorCode: 'ARTICLE_NOT_FOUND' },
       });
       expect(repository.updateIfVersion).not.toHaveBeenCalled();
+      expect(audit.log).not.toHaveBeenCalled();
     });
 
-    it('returns 409 when the version is stale', async () => {
-      repository.findById.mockResolvedValue({
-        id: 'a1',
-        authorId: 'u1',
-      } as never);
+    it('returns 409 when the version is stale, without an audit entry', async () => {
+      repository.findById.mockResolvedValue(owned());
       repository.updateIfVersion.mockResolvedValue(false);
 
       await expect(service.update('a1', 'u1', dto)).rejects.toMatchObject({
         constructor: ConflictException,
         response: { errorCode: 'VERSION_CONFLICT' },
       });
+      expect(audit.log).not.toHaveBeenCalled();
     });
+  });
+
+  describe('remove', () => {
+    it('deletes and audits in one transaction', async () => {
+      repository.findById.mockResolvedValue(owned());
+      repository.delete.mockResolvedValue(true);
+
+      await service.remove('a1', 'u1');
+
+      expect(repository.delete).toHaveBeenCalledWith('a1', tx);
+      expect(audit.log).toHaveBeenCalledWith(
+        expect.objectContaining({ action: 'article.deleted', entityId: 'a1' }),
+        tx,
+      );
+    });
+
+    it('returns 404 when the row is already gone', async () => {
+      repository.findById.mockResolvedValue(owned());
+      repository.delete.mockResolvedValue(false);
+
+      await expect(service.remove('a1', 'u1')).rejects.toBeInstanceOf(
+        NotFoundException,
+      );
+      expect(audit.log).not.toHaveBeenCalled();
+    });
+  });
+});
+```
+
+### articles.e2e-spec.ts
+
+`backend/test/articles.e2e-spec.ts` — runs against real Postgres/Redis through the shared harness
+(`createTestApp`, see `.claude/rules/testing.md`).
+
+```ts
+import * as bcrypt from 'bcryptjs';
+import { randomUUID } from 'node:crypto';
+import { createTestApp, TestApp, uniqueEmail } from './utils/test-app';
+
+describe('Articles template (e2e)', () => {
+  let t: TestApp;
+  let alice: string;
+  let bob: string;
+
+  const tokenFor = async (label: string) => {
+    const email = uniqueEmail(label);
+    await t.prisma.user.create({
+      data: {
+        email,
+        password: await bcrypt.hash('Passw0rd!', 10),
+        isEmailVerified: true,
+      },
+    });
+    return (
+      await t
+        .http()
+        .post('/v1/auth/login')
+        .send({ email, password: 'Passw0rd!' })
+        .expect(200)
+    ).body.data.accessToken as string;
+  };
+
+  beforeAll(async () => {
+    t = await createTestApp();
+    alice = await tokenFor('alice');
+    bob = await tokenFor('bob');
+  });
+
+  afterAll(async () => {
+    await t.app.close();
+  });
+
+  const as = (token: string, ip?: string) => ({
+    get: (path: string) =>
+      t.http(ip).get(path).set('Authorization', `Bearer ${token}`),
+    post: (path: string) =>
+      t.http(ip).post(path).set('Authorization', `Bearer ${token}`),
+    patch: (path: string) =>
+      t.http(ip).patch(path).set('Authorization', `Bearer ${token}`),
+    delete: (path: string) =>
+      t.http(ip).delete(path).set('Authorization', `Bearer ${token}`),
+  });
+
+  it('creates idempotently and audits the creation', async () => {
+    const key = randomUUID();
+    const body = { title: 'Nest basics', content: 'Resources are nouns' };
+    const first = await as(alice, '10.230.0.1')
+      .post('/v1/articles')
+      .set('Idempotency-Key', key)
+      .send(body)
+      .expect(201);
+    const retry = await as(alice, '10.230.0.2')
+      .post('/v1/articles')
+      .set('Idempotency-Key', key)
+      .send(body)
+      .expect(201);
+
+    expect(retry.headers['idempotent-replayed']).toBe('true');
+    expect(retry.body.data.id).toBe(first.body.data.id);
+    expect(
+      await t.prisma.auditLog.count({
+        where: { action: 'article.created', entityId: first.body.data.id },
+      }),
+    ).toBe(1);
+  });
+
+  it('updates with optimistic locking and audits only the changed fields', async () => {
+    const created = (
+      await as(alice)
+        .post('/v1/articles')
+        .send({ title: 'Draft', content: 'Body' })
+        .expect(201)
+    ).body.data;
+
+    const updated = await as(alice)
+      .patch(`/v1/articles/${created.id}`)
+      .send({ title: 'Published', content: 'Body', version: 0 })
+      .expect(200);
+    expect(updated.body.data.version).toBe(1);
+
+    const stale = await as(alice)
+      .patch(`/v1/articles/${created.id}`)
+      .send({ title: 'Stale', version: 0 })
+      .expect(409);
+    expect(stale.body.error.errorCode).toBe('VERSION_CONFLICT');
+
+    const entry = await t.prisma.auditLog.findFirst({
+      where: { action: 'article.updated', entityId: created.id },
+    });
+    expect(entry?.changes).toEqual({
+      title: { from: 'Draft', to: 'Published' },
+    });
+  });
+
+  it("hides other users' articles from writes and deletes with 204", async () => {
+    const created = (
+      await as(alice)
+        .post('/v1/articles')
+        .send({ title: 'Mine', content: 'Body' })
+        .expect(201)
+    ).body.data;
+
+    await as(bob)
+      .patch(`/v1/articles/${created.id}`)
+      .send({ title: 'Hacked', version: 0 })
+      .expect(404);
+    await as(bob).delete(`/v1/articles/${created.id}`).expect(404);
+    await as(alice).delete(`/v1/articles/${created.id}`).expect(204);
+    await as(alice).get(`/v1/articles/${created.id}`).expect(404);
+  });
+
+  it('lists with pagination, filters, projection and include', async () => {
+    const res = await as(alice)
+      .get('/v1/articles?limit=1&fields=title&include=author&sort=-createdAt')
+      .expect(200);
+
+    expect(res.body.meta).toMatchObject({ page: 1, limit: 1 });
+    expect(Object.keys(res.body.data[0]).sort()).toEqual([
+      'author',
+      'id',
+      'title',
+    ]);
+    const invalid = await as(alice)
+      .get('/v1/articles?sort=authorId')
+      .expect(400);
+    expect(invalid.body.error.errorCode).toBe('INVALID_QUERY_PARAM');
   });
 });
 ```
@@ -688,8 +986,10 @@ Add `ArticlesModule` to `imports` in `backend/src/app.module.ts`.
 - Filters: one explicit DTO property per filter, ranges as `<field>From` / `<field>To`, enums as arrays via `toArray`.
 - Every filter or sort column is covered by an index.
 - Drop `version` / `updateIfVersion` only if concurrent edits are impossible for this resource.
-- Resources without an owner: replace `assertOwner` with role checks (`@Roles(UserRole.ADMIN)`) or plain existence
+- Resources without an owner: replace `findOwned` with role checks (`@Roles(UserRole.ADMIN)`) or plain existence
   checks. Public read endpoints get `@Public()`.
-- Multi-write operations (e.g. create + audit row) go through `prisma.$transaction(async (tx) => ...)`, passing `tx`
-  to repository methods; emails and other side effects run after commit.
-- Add `@Idempotent()` to create/side-effect endpoints once the idempotency foundation exists.
+- Every create/update/delete writes its audit entry in the same transaction (module actions in
+  `<name>.constants.ts`; `changedFields(before, patch)` for updates); emails and other side effects run after commit.
+- `@Idempotent()` on create and side-effect endpoints, with its 400/409/422/503 codes documented.
+- Low-cardinality columns (status, type, action) are filters, not `search` or sort fields: `ILIKE '%term%'` and
+  `ORDER BY` on them scan most of a large table.

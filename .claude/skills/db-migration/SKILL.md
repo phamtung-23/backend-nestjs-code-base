@@ -42,7 +42,9 @@ npx prisma migrate diff \
 - [ ] Only the intended changes; nothing unrelated from schema drift.
 - [ ] No data loss: DROP COLUMN/TABLE, type narrowing and enum value removal need an expand → backfill → contract
       plan across releases. Stop and confirm with the user before any destructive step.
-- [ ] `NOT NULL` columns added to populated tables have a default or a backfill step.
+- [ ] `NOT NULL` columns added to populated tables have a default or a backfill step. No volatile default
+      (`gen_random_uuid()`, `random()`) on `ADD COLUMN`: it rewrites the table under an exclusive lock that the
+      rest of the file keeps holding (database rule, "Migrations").
 - [ ] Indexes exist for new FKs and for filter/sort columns; no index duplicates a unique constraint. On large, busy
       tables, prefer `CREATE INDEX CONCURRENTLY` in its own migration (it can't run inside a transaction).
 - [ ] Backward compatible with the currently deployed code: containers run `prisma migrate deploy` on start, before

@@ -33,6 +33,11 @@ paths:
   old one kept nullable) and `20260924000100_lowercase_user_emails` (data fix that can't fail + `NOT VALID` check).
 - A data migration that could fail on existing rows must not run after destructive steps of the same release; make
   it unable to fail, and document the manual follow-up in the migration.
+- Prisma runs a migration file as one transaction, so the first `ALTER TABLE` holds its ACCESS EXCLUSIVE lock
+  until the file ends. On populated tables: never `ADD COLUMN ... DEFAULT <volatile>` (`gen_random_uuid()`,
+  `random()` — rewrites the whole table); add the column nullable, set the default for new rows, backfill in
+  batches in a later step, then `NOT NULL` via a validated `CHECK ... NOT VALID`. Avoid full-table `UPDATE`s in the
+  same file as DDL. `CREATE INDEX CONCURRENTLY` needs a migration of its own.
 - `prisma/seed.ts` is for dev data only.
 
 ## Queries

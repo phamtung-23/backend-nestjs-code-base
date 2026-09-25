@@ -11,6 +11,9 @@ async function bootstrap() {
     bufferLogs: true,
   });
   app.useLogger(new AppLogger());
+  // Run onModuleDestroy/onApplicationShutdown on SIGTERM (docker stop), so
+  // Prisma and Redis close their connections cleanly
+  app.enableShutdownHooks();
   setupApp(app);
 
   const port = app.get(ConfigService).get<number>('PORT') ?? 3000;
