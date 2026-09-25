@@ -26,7 +26,8 @@ paths:
   password write.
 - Password login requires `isEmailVerified` (403 `AUTH_EMAIL_NOT_VERIFIED`); `verify-email` requires the password as
   well as the code; a successful reset verifies the email; OTP login must never mark it verified. Together these
-  are the squatting protection — keep all four (see `AuthService.verifyEmail` / `verifyLoginOtp`).
+  are the squatting protection — keep all four (see `RegistrationService.verifyEmail`, `PasswordService.resetPassword`,
+  `AuthService.login` / `verifyLoginOtp`).
 - Refresh tokens belong to a family (one per login); logout revokes the family, and reuse of a rotated token after
   `REFRESH_REUSE_GRACE_MS` revokes it too (`TokenService.handleReuse`).
 - Passwords: bcryptjs async API with cost ≥ 10. Select the `password` column only in credential-check queries;
@@ -36,8 +37,10 @@ paths:
   throwing: a rollback would undo the attempt counter.
 - Public endpoints never reveal whether an account exists: same response either way, `AUTH_INVALID_CODE` for
   unknown emails, dummy bcrypt compare for unknown logins, and code-sending flows that do all their work (lookup,
-  issuing, SMTP) after the response (`AuthService.runInBackground`), so timing reveals nothing. Deliberate
+  issuing, SMTP) after the response (`CodeDeliveryService.sendInBackground`), so timing reveals nothing. Deliberate
   exception: register answers 409 `AUTH_EMAIL_TAKEN`.
+- The password check lives in `CredentialsService.verify` (dummy compare, failed-login audit in the background, 403
+  for disabled accounts only after the password matched); flows call it rather than bcrypt directly.
 - Anything that sends a code is also limited per account (`OtpService.issue`: cooldown + hourly cap), not only per IP.
 - Transactions that issue or revoke a user's sessions or codes start with `usersService.lockForUpdate(userId, tx)`;
   flows that verified a password outside the transaction re-check the hash under that lock.
@@ -79,8 +82,11 @@ paths:
 ## Secrets & sensitive data
 
 - Secrets only come from env; `.env` is never committed; `.env.sample` / `backend/.env.example` hold placeholders.
-- Never log tokens, passwords, OTP codes, `Authorization` headers or full card numbers; mask emails in logs where
-  practical.
+- Never log tokens, passwords, OTP codes, `Authorization` headers or full card numbers; log email addresses only
+  through `maskEmail` (`src/common/helpers/mask.helpers.ts`), and pass third-party error text that may echo them
+  (SMTP replies) through `maskEmailsIn`.
+- Outbound SMTP with credentials requires TLS (`SmtpMailSender`: implicit TLS on 465, `requireTLS` otherwise), so a
+  man-in-the-middle can't strip STARTTLS and read the credentials or the codes.
 - Response DTOs whitelist fields; secret columns never leave the repository except for the specific auth check.
 - Raw SQL only through tagged `$queryRaw\`...\``; `$queryRawUnsafe` / `$executeRawUnsafe` with user input are
   forbidden.

@@ -8,11 +8,12 @@ import {
   ServiceUnavailableException,
   UnprocessableEntityException,
 } from '@nestjs/common';
-import { ConfigService } from '@nestjs/config';
 import { createHash, createHmac, hkdfSync } from 'node:crypto';
 import { lastValueFrom, Observable, of, throwError } from 'rxjs';
+import { AuthConfig } from '../../config/auth.config';
 import { RedisClient } from '../../redis/redis.constants';
 import { ErrorCode } from '../constants/error-codes';
+import { SuccessEnvelope } from '../helpers/response.helper';
 import {
   IDEMPOTENT_REPLAY_HEADER,
   IdempotencyInterceptor,
@@ -117,8 +118,8 @@ describe('IdempotencyInterceptor', () => {
     new IdempotencyInterceptor(
       redis as unknown as RedisClient,
       {
-        getOrThrow: () => secret,
-      } as unknown as ConfigService,
+        jwtSecret: secret,
+      } as AuthConfig,
     );
 
   afterEach(() => loggerError.mockRestore());
@@ -255,9 +256,25 @@ describe('IdempotencyInterceptor', () => {
       expect(redis.set).toHaveBeenNthCalledWith(
         2,
         ANONYMOUS_KEY,
-        stored({ state: 'done', fingerprint: FINGERPRINT, body }),
+        stored({
+          state: 'done',
+          fingerprint: FINGERPRINT,
+          body,
+          enveloped: false,
+        }),
         { expiration: RESULT_TTL },
       );
+    });
+
+    it('remembers that the body was a SuccessEnvelope', async () => {
+      handlerResult = of(new SuccessEnvelope({ id: 'user-1' }, 'Registered'));
+
+      await run();
+
+      expect(JSON.parse(redis.set.mock.calls[1][1])).toMatchObject({
+        body: { status: 'success', message: 'Registered' },
+        enveloped: true,
+      });
     });
 
     it('still returns the body when storing the outcome fails, and logs it', async () => {
@@ -445,9 +462,14 @@ describe('IdempotencyInterceptor', () => {
     });
 
     it('replays a stored success with the Idempotent-Replayed header, without running the handler', async () => {
-      const body = { status: 'success', data: { id: 'user-1' } };
+      const body = { id: 'user-1' };
       redis.get.mockResolvedValue(
-        stored({ state: 'done', fingerprint: FINGERPRINT, body }),
+        stored({
+          state: 'done',
+          fingerprint: FINGERPRINT,
+          body,
+          enveloped: false,
+        }),
       );
 
       await expect(run()).resolves.toEqual(body);
@@ -457,6 +479,27 @@ describe('IdempotencyInterceptor', () => {
       );
       expect(next.handle).not.toHaveBeenCalled();
       expect(redis.set).toHaveBeenCalledTimes(1);
+    });
+
+    it('replays a stored envelope as a SuccessEnvelope, so it is not wrapped twice', async () => {
+      const body = {
+        status: 'success',
+        message: 'Registered',
+        data: { id: 'user-1' },
+      };
+      redis.get.mockResolvedValue(
+        stored({
+          state: 'done',
+          fingerprint: FINGERPRINT,
+          body,
+          enveloped: true,
+        }),
+      );
+
+      const replayed = await run();
+
+      expect(replayed).toBeInstanceOf(SuccessEnvelope);
+      expect(replayed).toEqual(body);
     });
 
     it('replays a stored 4xx as the same HttpException, with the header', async () => {

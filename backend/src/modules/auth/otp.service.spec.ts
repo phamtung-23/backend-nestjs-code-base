@@ -1,4 +1,3 @@
-import { ConfigService } from '@nestjs/config';
 import { Otp, OtpType, Prisma } from '@prisma/client';
 import * as crypto from 'node:crypto';
 import {
@@ -6,6 +5,7 @@ import {
   OTP_MAX_ISSUED_PER_WINDOW,
   OTP_RESEND_COOLDOWN_MS,
 } from './auth.constants';
+import { AuthConfig } from '../../config/auth.config';
 import { OtpRepository } from './otp.repository';
 import { OtpService } from './otp.service';
 
@@ -33,16 +33,14 @@ const buildOtp = (overrides: Partial<Otp> = {}): Otp => ({
   ...overrides,
 });
 
-const buildConfig = (values: Record<string, number | undefined>) =>
-  ({
-    getOrThrow: jest.fn((key: string) => {
-      const value = values[key];
-      if (value === undefined) {
-        throw new TypeError(`Configuration key "${key}" does not exist`);
-      }
-      return value;
-    }),
-  }) as unknown as ConfigService;
+const CONFIG: AuthConfig = {
+  jwtSecret: 'access-secret',
+  jwtRefreshSecret: 'refresh-secret',
+  accessTokenTtl: '30m',
+  refreshTokenTtl: '14d',
+  otpMaxAttempts: 3,
+  otpExpiryMinutes: 15,
+};
 
 describe('OtpService', () => {
   const tx = { tx: true } as unknown as Prisma.TransactionClient;
@@ -64,10 +62,7 @@ describe('OtpService', () => {
       deleteStale: jest.fn(),
     } as unknown as jest.Mocked<OtpRepository>;
 
-    service = new OtpService(
-      repository,
-      buildConfig({ OTP_MAX_ATTEMPTS: 3, OTP_EXPIRY_MINUTES: 15 }),
-    );
+    service = new OtpService(repository, CONFIG);
   });
 
   afterEach(() => jest.useRealTimers());
@@ -76,21 +71,6 @@ describe('OtpService', () => {
     it('exposes the configured expiry for the emails', () => {
       expect(service.expiryMinutes).toBe(15);
     });
-
-    it.each(['OTP_MAX_ATTEMPTS', 'OTP_EXPIRY_MINUTES'])(
-      'fails fast when %s is not configured',
-      (missing) => {
-        const values: Record<string, number> = {
-          OTP_MAX_ATTEMPTS: 3,
-          OTP_EXPIRY_MINUTES: 15,
-        };
-        delete values[missing];
-
-        expect(() => new OtpService(repository, buildConfig(values))).toThrow(
-          missing,
-        );
-      },
-    );
   });
 
   describe('issue', () => {

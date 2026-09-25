@@ -1,6 +1,11 @@
 import { plainToInstance } from 'class-transformer';
 import { validateSync } from 'class-validator';
-import { ListQueryDto, MAX_PAGE, MAX_PAGE_LIMIT } from './list-query.dto';
+import {
+  CursorListQueryDto,
+  ListQueryDto,
+  MAX_PAGE,
+  MAX_PAGE_LIMIT,
+} from './list-query.dto';
 
 const validate = (query: Record<string, unknown>) => {
   const dto = plainToInstance(ListQueryDto, query);
@@ -46,5 +51,36 @@ describe('ListQueryDto', () => {
 
   it('trims the search term', () => {
     expect(validate({ search: '  nest  ' }).dto.search).toBe('nest');
+  });
+});
+
+describe('CursorListQueryDto', () => {
+  const validateCursor = (query: Record<string, unknown>) => {
+    const dto = plainToInstance(CursorListQueryDto, query);
+    return { dto, errors: validateSync(dto).map((error) => error.property) };
+  };
+
+  it('defaults to limit 20 and has no page', () => {
+    const { dto, errors } = validateCursor({});
+    expect(errors).toEqual([]);
+    expect(dto.limit).toBe(20);
+    expect(dto).not.toHaveProperty('page');
+  });
+
+  it('accepts a cursor and the shared list options', () => {
+    const { dto, errors } = validateCursor({
+      cursor: 'eyJpZCI6ImEifQ',
+      limit: '50',
+      sort: '-createdAt',
+    });
+    expect(errors).toEqual([]);
+    expect(dto).toMatchObject({ cursor: 'eyJpZCI6ImEifQ', limit: 50 });
+  });
+
+  it.each([
+    ['cursor', 'x'.repeat(501)],
+    ['limit', String(MAX_PAGE_LIMIT + 1)],
+  ])('rejects %s=%s', (key, value) => {
+    expect(validateCursor({ [key]: value }).errors).toContain(key);
   });
 });

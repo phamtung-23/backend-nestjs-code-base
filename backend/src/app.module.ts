@@ -1,5 +1,5 @@
 import { Module } from '@nestjs/common';
-import { ConfigModule, ConfigService } from '@nestjs/config';
+import { ConfigModule } from '@nestjs/config';
 import { CacheModule } from '@nestjs/cache-manager';
 import { ScheduleModule } from '@nestjs/schedule';
 import { ThrottlerGuard, ThrottlerModule } from '@nestjs/throttler';
@@ -17,6 +17,7 @@ import { RolesGuard } from './modules/auth/guards/roles.guard';
 import { ResponseInterceptor } from './common/interceptors/response.interceptor';
 import { GlobalExceptionFilter } from './common/filters/global-exception.filter';
 import { validateEnv } from './config/env.validation';
+import { CONFIG_NAMESPACES, RedisConfig, redisConfig } from './config';
 
 @Module({
   imports: [
@@ -27,6 +28,8 @@ import { validateEnv } from './config/env.validation';
       // Read only validated values; otherwise an empty var dropped by
       // validateEnv would come back as '' from process.env and skip its default
       skipProcessEnv: true,
+      // Typed groups for injection: @Inject(authConfig.KEY) auth: AuthConfig
+      load: CONFIG_NAMESPACES,
     }),
     RedisModule,
     ThrottlerModule.forRootAsync({
@@ -44,15 +47,12 @@ import { validateEnv } from './config/env.validation';
     }),
     CacheModule.registerAsync({
       isGlobal: true,
-      inject: [ConfigService],
-      useFactory: (configService: ConfigService) => ({
+      inject: [redisConfig.KEY],
+      useFactory: (redis: RedisConfig) => ({
         stores: [
           createKeyv({
-            socket: {
-              host: configService.get('REDIS_HOST') || 'localhost',
-              port: parseInt(configService.get('REDIS_PORT') || '6379'),
-            },
-            password: configService.get('REDIS_PASSWORD') || undefined,
+            socket: { host: redis.host, port: redis.port },
+            password: redis.password || undefined,
           }),
         ],
         ttl: 60 * 60 * 1000, // 1 hour in milliseconds

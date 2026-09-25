@@ -1,5 +1,4 @@
-import { Injectable } from '@nestjs/common';
-import { ConfigService } from '@nestjs/config';
+import { Inject, Injectable } from '@nestjs/common';
 import { OtpType, Prisma } from '@prisma/client';
 import { randomInt, timingSafeEqual } from 'node:crypto';
 import {
@@ -9,6 +8,7 @@ import {
   OTP_RESEND_COOLDOWN_MS,
   USED_OTP_RETENTION_MS,
 } from './auth.constants';
+import { AuthConfig, authConfig } from '../../config/auth.config';
 import { OtpRepository } from './otp.repository';
 
 // Constant-time comparison, so response timing reveals nothing about the code
@@ -25,11 +25,10 @@ export class OtpService {
 
   constructor(
     private readonly otpRepository: OtpRepository,
-    configService: ConfigService,
+    @Inject(authConfig.KEY) config: AuthConfig,
   ) {
-    // Defaults live in env validation
-    this.maxAttempts = configService.getOrThrow<number>('OTP_MAX_ATTEMPTS');
-    this.expiryMinutes = configService.getOrThrow<number>('OTP_EXPIRY_MINUTES');
+    this.maxAttempts = config.otpMaxAttempts;
+    this.expiryMinutes = config.otpExpiryMinutes;
   }
 
   // Issues a new numeric code and invalidates older codes of the same type.

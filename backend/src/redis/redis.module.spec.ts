@@ -1,6 +1,6 @@
 import { Logger } from '@nestjs/common';
-import { ConfigService } from '@nestjs/config';
 import { createClient } from 'redis';
+import { RedisConfig } from '../config/redis.config';
 import { RedisClient } from './redis.constants';
 import { createRedisClient, RedisModule } from './redis.module';
 
@@ -18,17 +18,11 @@ describe('createRedisClient', () => {
   let loggerWarn: jest.SpyInstance;
   let loggerLog: jest.SpyInstance;
 
-  const buildConfig = (values: Record<string, unknown>) =>
-    ({
-      get: jest.fn((key: string) => values[key]),
-    }) as unknown as ConfigService;
-
-  const defaultConfig = () =>
-    buildConfig({
-      REDIS_HOST: 'redis.internal',
-      REDIS_PORT: 6380,
-      REDIS_PASSWORD: 's3cret',
-    });
+  const defaultConfig = (): RedisConfig => ({
+    host: 'redis.internal',
+    port: 6380,
+    password: 's3cret',
+  });
 
   const clientOptions = () => mockedCreateClient.mock.calls[0][0];
 
@@ -74,13 +68,7 @@ describe('createRedisClient', () => {
     ['empty', ''],
     ['unset', undefined],
   ])('sends no password when REDIS_PASSWORD is %s', (_case, password) => {
-    createRedisClient(
-      buildConfig({
-        REDIS_HOST: 'redis',
-        REDIS_PORT: 6379,
-        REDIS_PASSWORD: password,
-      }),
-    );
+    createRedisClient({ host: 'redis', port: 6379, password });
 
     expect(clientOptions().password).toBeUndefined();
   });

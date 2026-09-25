@@ -110,12 +110,27 @@ describe('Audit log (e2e)', () => {
   });
 
   it('paginates, projects and validates the query', async () => {
-    const page = await listAs(adminToken, '?limit=2&fields=id,action').expect(
+    const ids = (res: { body: { data: Array<{ id: string }> } }) =>
+      res.body.data.map((entry) => entry.id);
+
+    const first = await listAs(adminToken, '?limit=2&fields=id,action').expect(
       200,
     );
-    expect(page.body.meta).toMatchObject({ page: 1, limit: 2 });
-    expect(page.body.meta.totalPages).toBeGreaterThanOrEqual(1);
-    expect(Object.keys(page.body.data[0]).sort()).toEqual(['action', 'id']);
+    expect(first.body.meta).toEqual({
+      limit: 2,
+      hasMore: true,
+      nextCursor: expect.any(String),
+    });
+    // createdAt is read to build the cursor but not returned unless asked for
+    expect(Object.keys(first.body.data[0]).sort()).toEqual(['action', 'id']);
+
+    // Two pages of 2 are exactly one page of 4: nothing skipped or repeated
+    const second = await listAs(
+      adminToken,
+      `?limit=2&cursor=${first.body.meta.nextCursor}`,
+    ).expect(200);
+    const four = await listAs(adminToken, '?limit=4').expect(200);
+    expect([...ids(first), ...ids(second)]).toEqual(ids(four));
 
     // A bare date as upper bound covers the whole day
     const today = new Date().toISOString().slice(0, 10);
@@ -123,16 +138,40 @@ describe('Audit log (e2e)', () => {
       adminToken,
       `?createdFrom=${today}&createdTo=${today}`,
     ).expect(200);
-    expect(sameDay.body.meta.total).toBeGreaterThan(0);
+    expect(sameDay.body.data.length).toBeGreaterThan(0);
 
-    for (const query of [
+    const invalid = [
       '?sort=ipAddress',
       '?sort=action',
+      '?sort=createdAt,-createdAt',
       '?fields=password',
-    ]) {
-      const invalid = await listAs(adminToken, query).expect(400);
-      expect(invalid.body.error.errorCode).toBe('INVALID_QUERY_PARAM');
+      '?cursor=not-a-cursor',
+      `?cursor=${first.body.meta.nextCursor}!!`,
+      // A cursor belongs to the sort of the page it came from
+      `?sort=createdAt&cursor=${first.body.meta.nextCursor}`,
+    ];
+    for (const query of invalid) {
+      const res = await listAs(adminToken, query).expect(400);
+      expect(res.body.error.errorCode).toBe('INVALID_QUERY_PARAM');
     }
+  });
+
+  it('keeps paging when the row the cursor points at is deleted meanwhile', async () => {
+    const ids = (res: { body: { data: Array<{ id: string }> } }) =>
+      res.body.data.map((entry) => entry.id);
+    const [first, rest] = await Promise.all([
+      listAs(adminToken, '?limit=2&sort=createdAt').expect(200),
+      listAs(adminToken, '?limit=4&sort=createdAt').expect(200),
+    ]);
+
+    // e.g. the retention job purging the oldest entries
+    await t.prisma.auditLog.delete({ where: { id: ids(first)[1] } });
+
+    const next = await listAs(
+      adminToken,
+      `?limit=2&sort=createdAt&cursor=${first.body.meta.nextCursor}`,
+    ).expect(200);
+    expect(ids(next)).toEqual(ids(rest).slice(2));
   });
 
   it.each([
@@ -143,6 +182,7 @@ describe('Audit log (e2e)', () => {
     ['search (not supported here)', '?search=password'],
     ['include (entries have no relations)', '?include=actor'],
     ['an unknown parameter', '?foo=1'],
+    ['page (cursor pagination only)', '?page=2'],
   ])('returns 400 VALIDATION_FAILED for %s', async (_case, query) => {
     const res = await listAs(adminToken, query).expect(400);
     expect(res.body.error.errorCode).toBe('VALIDATION_FAILED');

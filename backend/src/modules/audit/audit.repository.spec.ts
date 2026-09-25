@@ -58,30 +58,37 @@ describe('AuditRepository', () => {
     });
   });
 
-  describe('findPage', () => {
-    it('reads the page and the total count in one transaction', async () => {
+  describe('findMany', () => {
+    it('reads one keyset page with the given arguments, without counting', async () => {
       const args = {
         where: { action: 'user.registered' },
-        orderBy: [{ createdAt: 'desc' as const }, { id: 'asc' as const }],
-        select: { id: true, action: true },
-        skip: 20,
-        take: 10,
+        orderBy: [{ createdAt: 'desc' as const }, { id: 'desc' as const }],
+        select: { id: true, action: true, createdAt: true },
+        take: 11,
       };
-      const items = [{ id: 'log-1', action: 'user.registered' }];
-      prisma.$transaction.mockResolvedValue([items, 21]);
+      const rows = [{ id: 'log-1', action: 'user.registered' }];
+      prisma.auditLog.findMany.mockResolvedValue(rows);
 
-      await expect(repository.findPage(args)).resolves.toEqual({
-        items,
-        total: 21,
-      });
+      await expect(repository.findMany(args)).resolves.toBe(rows);
       expect(prisma.auditLog.findMany).toHaveBeenCalledWith(args);
-      expect(prisma.auditLog.count).toHaveBeenCalledWith({
-        where: { action: 'user.registered' },
-      });
-      expect(prisma.$transaction).toHaveBeenCalledWith([
-        'find-many-query',
-        'count-query',
-      ]);
+      expect(prisma.auditLog.count).not.toHaveBeenCalled();
+    });
+
+    it('reads within the given transaction', async () => {
+      const txFindMany = jest.fn().mockResolvedValue([]);
+      const args = {
+        where: {},
+        orderBy: [{ createdAt: 'desc' as const }],
+        select: { id: true },
+        take: 1,
+      };
+
+      await repository.findMany(args, {
+        auditLog: { findMany: txFindMany },
+      } as unknown as Prisma.TransactionClient);
+
+      expect(txFindMany).toHaveBeenCalledWith(args);
+      expect(prisma.auditLog.findMany).not.toHaveBeenCalled();
     });
   });
 

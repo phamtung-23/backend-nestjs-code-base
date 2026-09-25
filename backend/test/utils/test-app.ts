@@ -18,7 +18,7 @@ export class FakeMailbox {
     this.store(email, 'verification', code);
   sendPasswordResetOtp = (email: string, code: string) =>
     this.store(email, 'password-reset', code);
-  sendOtpEmail = (email: string, code: string) =>
+  sendLoginOtp = (email: string, code: string) =>
     this.store(email, 'login', code);
 
   sentCount(email: string, kind: MailKind): number {

@@ -1,40 +1,29 @@
 import {
+  CallHandler,
+  ExecutionContext,
   Injectable,
   NestInterceptor,
-  ExecutionContext,
-  CallHandler,
 } from '@nestjs/common';
 import { Observable } from 'rxjs';
 import { map } from 'rxjs/operators';
-import { ApiResponse } from '../interfaces/response.interface';
+import { SuccessEnvelope } from '../helpers/response.helper';
 
+// Wraps whatever a handler returns in the success envelope, unless it already
+// is one (built with ResponseHelper)
 @Injectable()
 export class ResponseInterceptor<T>
-  implements NestInterceptor<T, ApiResponse<T>>
+  implements NestInterceptor<T, SuccessEnvelope<unknown>>
 {
   intercept(
-    context: ExecutionContext,
-    next: CallHandler,
-  ): Observable<ApiResponse<T>> {
-    return next.handle().pipe(
-      map((data) => {
-        // Nếu data đã là ApiResponse format, trả về nguyên vẹn
-        if (
-          data &&
-          typeof data === 'object' &&
-          'status' in data &&
-          'message' in data
-        ) {
-          return data as ApiResponse<T>;
-        }
-
-        // Nếu không, wrap data vào ApiResponse format
-        return {
-          status: 'success',
-          message: 'Request completed successfully',
-          data: data,
-        } as ApiResponse<T>;
-      }),
-    );
+    _context: ExecutionContext,
+    next: CallHandler<T>,
+  ): Observable<SuccessEnvelope<unknown>> {
+    return next
+      .handle()
+      .pipe(
+        map((data) =>
+          data instanceof SuccessEnvelope ? data : new SuccessEnvelope(data),
+        ),
+      );
   }
 }

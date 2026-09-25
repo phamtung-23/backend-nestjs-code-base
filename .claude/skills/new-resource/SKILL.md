@@ -17,7 +17,8 @@ implementation is `reference/templates.md` (a working `articles` module); shared
 - Relations and which may be embedded via `?include=`.
 - Access: owned by a user (ownership checks) or role-based (`@Roles`), and which operations are public.
 - Concurrent edits possible? → `version` column + optimistic locking (default: yes for user-edited resources).
-- Offset pagination (default) or cursor pagination (feeds, very large tables).
+- Offset pagination (default; the template) or cursor pagination (feeds, very large or fast-growing tables;
+  `CursorListQueryDto` + the keyset helpers in `src/common/query/cursor.helpers.ts`, reference `AuditService.list`).
 
 ## 2. Foundations
 
@@ -38,6 +39,7 @@ Create `backend/src/modules/<name>/` by adapting `reference/templates.md`:
 - `<name>.constants.ts` — SORTABLE, DEFAULT_SORT, SEARCHABLE, FIELDS (non-sensitive only), INCLUDABLE, error codes
 - `dto/` — create, update (`PartialType` + `version`), list query (extends `ListQueryDto`), response DTO
 - `<name>.repository.ts` — Prisma only, optional `tx` on every method, `findPage` via `$transaction([findMany, count])`
+  (offset) or a plain `findMany` taking the keyset `where` / `orderBy` / `take` (cursor)
 - `<name>.service.ts` — filters → `where`, `parseSort` / `buildSelect` / `buildSearch`, explicit field mapping,
   ownership → 404, stale version → 409 `VERSION_CONFLICT`, transactions for multi-writes, side effects after commit
 - `<name>.controller.ts` — thin; correct status codes (201 create, 204 delete, `@HttpCode(200)` for actions);

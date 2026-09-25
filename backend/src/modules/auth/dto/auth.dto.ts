@@ -117,7 +117,7 @@ export class RefreshTokenDto {
 export class ResendVerificationDto extends EmailDto {}
 export class ForgotPasswordDto extends EmailDto {}
 export class SendOtpDto extends EmailDto {}
-// The password proves the verifier is the registrant (see AuthService.verifyEmail)
+// The password proves the verifier is the registrant (see RegistrationService.verifyEmail)
 export class VerifyEmailDto extends OtpCodeDto {
   @IsExistingPassword()
   password: string;

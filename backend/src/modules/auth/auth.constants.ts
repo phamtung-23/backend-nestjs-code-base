@@ -1,3 +1,6 @@
+import { OtpType } from '@prisma/client';
+import type { MailService } from '../mail/mail.service';
+
 export const AuthErrorCode = {
   EMAIL_TAKEN: 'AUTH_EMAIL_TAKEN',
   INVALID_CREDENTIALS: 'AUTH_INVALID_CREDENTIALS',
@@ -47,3 +50,11 @@ export const AuthMessage = {
   LOGIN_CODE_SENT:
     'If an account with that email exists, a login code has been sent.',
 } as const;
+
+// The MailService method that emails each code type. `satisfies` makes a new
+// OtpType fail to compile until it gets an email.
+export const OTP_MAIL_METHOD = {
+  [OtpType.VERIFICATION]: 'sendVerificationOtp',
+  [OtpType.PASSWORD_RESET]: 'sendPasswordResetOtp',
+  [OtpType.LOGIN]: 'sendLoginOtp',
+} as const satisfies Record<OtpType, keyof MailService>;

@@ -121,7 +121,10 @@
       "**/*.middleware.ts",
       "**/*.logger.ts",
       "**/context/*.ts",
-      "config/*.validation.ts"
+      "config/*.validation.ts",
+      "config/*.config.ts",
+      "**/*.sender.ts",
+      "**/*.template.ts"
     ],
     "coverageDirectory": "../coverage",
     "coverageReporters": [

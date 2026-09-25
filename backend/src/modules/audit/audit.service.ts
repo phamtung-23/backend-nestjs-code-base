@@ -1,7 +1,14 @@
 import { Injectable } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 import { RequestContext } from '../../common/context/request-context';
-import { buildSelect, parseSort } from '../../common/query';
+import {
+  buildSelect,
+  cursorOrderBy,
+  cursorPage,
+  cursorSelect,
+  cursorWhere,
+  parseCursorSort,
+} from '../../common/query';
 import {
   AUDIT_DEFAULT_SORT,
   AUDIT_FIELDS,
@@ -62,16 +69,25 @@ export class AuditService {
           : undefined,
     };
 
-    return this.auditRepository.findPage({
-      where,
-      orderBy: parseSort(query.sort, AUDIT_SORTABLE, AUDIT_DEFAULT_SORT),
-      select: buildSelect<Prisma.AuditLogSelect>(query, {
-        fields: AUDIT_FIELDS,
-        includable: AUDIT_INCLUDABLE,
-      }),
-      skip: (query.page - 1) * query.limit,
-      take: query.limit,
+    const sort = parseCursorSort(
+      query.sort,
+      AUDIT_SORTABLE,
+      AUDIT_DEFAULT_SORT,
+    );
+    const select = buildSelect<Prisma.AuditLogSelect>(query, {
+      fields: AUDIT_FIELDS,
+      includable: AUDIT_INCLUDABLE,
     });
+    const after = cursorWhere<Prisma.AuditLogWhereInput>(query.cursor, sort);
+
+    const rows = await this.auditRepository.findMany({
+      // AND, so the cursor bound can't replace the createdAt range filter
+      where: after ? { AND: [where, after] } : where,
+      orderBy: cursorOrderBy(sort),
+      select: cursorSelect(select, sort),
+      take: query.limit + 1,
+    });
+    return cursorPage(rows, query.limit, sort, select);
   }
 
   // Retention, run by AuditRetentionTask. Returns how many entries it removed.

@@ -50,7 +50,12 @@ paths:
   `where: { id: { in: ids } }` plus an in-memory map, or `_count` for counts.
 - `include` is whitelisted, depth ≤ 1 by default, and nested lists are bounded with `take` and `select`.
 - Lists are always paginated: offset lists use `prisma.$transaction([findMany, count])`; ordering is stable with
-  an `id` tiebreaker; cursor pagination uses `cursor: { id }, skip: 1`.
+  an `id` tiebreaker. Cursor lists use the keyset helpers in `src/common/query/cursor.helpers.ts` (reference:
+  `AuditService.list`), never Prisma's `cursor: { id }, skip: 1`: Postgres can't turn Prisma's cursor condition into
+  an index range (every deep page scans all earlier rows) and a deleted cursor row silently returns an empty page.
+  The keyset `where` (`field <= v AND (field < v OR (field = v AND id < cursorId))`) is an `Index Cond` on the
+  sort field's index (measured: 0.04 ms at depth 600k of 1M rows). The sort field must be non-nullable and
+  indexed, alone or after the list's equality filters (`@@index([actorId, createdAt])`).
 - Case-insensitive search: `{ contains: term, mode: 'insensitive' }`. On large tables, add a pg_trgm GIN index or
   full-text search in a migration.
 
@@ -73,7 +78,7 @@ await this.mailService.sendWelcome(user.email); // side effects after commit
 ## Concurrency
 
 - DB constraints enforce uniqueness — a pre-check is fine for a friendly error, but still catch P2002 → 409
-  (`isPrismaError(error, 'P2002')` from `src/common/helpers/prisma.helpers.ts`; see `AuthService.register`).
+  (`isPrismaError(error, 'P2002')` from `src/common/helpers/prisma.helpers.ts`; see `RegistrationService.register`).
 - State transitions use atomic conditional writes (reference: `OtpRepository.registerAttempt` / `markUsed`, `RefreshTokenRepository.revokeIfActive`):
 
 ```ts
@@ -100,5 +105,5 @@ if (count === 0) {
 - Check `EXPLAIN ANALYZE` for new list queries against realistic data volumes.
 - Cache read-heavy, rarely changing data with `CACHE_MANAGER` (Redis): explicit TTL, `<module>:<entity>:<id>`
   keys, invalidate on write.
-- Avoid a `count` per request on huge tables — use cursor pagination there.
+- Avoid a `count` per request on huge tables — use cursor pagination there (reference: `GET /v1/audit-logs`).
 - Tune `connection_limit` in `DATABASE_URL` for the deployment's concurrency.

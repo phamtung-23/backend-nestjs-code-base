@@ -56,23 +56,37 @@ paths:
 { "status": "success", "message": "Users retrieved", "data": {}, "meta": {} }
 ```
 
-- `ResponseInterceptor` wraps anything that isn't already an envelope. Controllers use
-  `ResponseHelper.success(data, message)` / `ResponseHelper.paginated(...)` when the message matters.
+- `ResponseInterceptor` wraps anything that isn't a `SuccessEnvelope` (the class `ResponseHelper` builds), so data
+  that happens to have `status` / `message` keys is still wrapped. Controllers use
+  `ResponseHelper.success(data, message)` / `ResponseHelper.paginated(...)` / `ResponseHelper.cursorPaginated(...)`
+  when the message matters.
 - Services return domain data, never envelopes and never `{ message }` objects.
 - Expose data through response DTOs (`<Entity>ResponseDto`) or explicit mapping — never raw Prisma models that
   include sensitive columns. `meta` appears only on list responses. 204 responses have no body.
 
 ## List endpoints: pagination, filter, sort, search, fields, include
 
-Every list endpoint takes a query DTO extending the shared `ListQueryDto` from `src/common/query`, and builds its
-Prisma arguments with `parseSort`, `buildSelect` and `buildSearch` from the same module (reference implementation:
-`.claude/skills/new-resource/reference/templates.md`). Detail endpoints that support `fields`/`include` take
-`ProjectionQueryDto`. Document list responses with `@ApiEnvelopeResponse(Dto, { paginated: true })`.
+Every list endpoint takes a query DTO from `src/common/query` and builds its Prisma arguments with `parseSort`,
+`buildSelect` and `buildSearch` from the same module:
+
+- Offset (default): `ListQueryDto`, `$transaction([findMany, count])`, `ResponseHelper.paginated`,
+  `@ApiEnvelopeResponse(Dto, { paginated: true })` — reference: `.claude/skills/new-resource/reference/templates.md`.
+- Cursor (feeds, large or fast-growing tables — no count, no OFFSET, keyset): `CursorListQueryDto`,
+  `parseCursorSort` (exactly one non-nullable SORTABLE field; `id` tiebreaker in the same direction), then
+  `findMany({ where: { AND: [filters, cursorWhere(cursor, sort)] }, orderBy: cursorOrderBy(sort), select:
+  cursorSelect(select, sort), take: limit + 1 })` and `cursorPage(rows, limit, sort, select)`,
+  `ResponseHelper.cursorPaginated`, `@ApiEnvelopeResponse(Dto, { paginated: 'cursor' })` — reference:
+  `AuditService.list` (`GET /v1/audit-logs`). The cursor carries its sort and the last row's sort value and id, so a
+  deep page is an index range and a deleted cursor row doesn't end the list. Clients pass `meta.nextCursor` back
+  unchanged as `?cursor=` with the same sort and filters; a malformed cursor or one from another sort is 400
+  `INVALID_QUERY_PARAM`.
+
+Detail endpoints that support `fields`/`include` take `ProjectionQueryDto`.
 
 | Param | Example | Rule |
 | --- | --- | --- |
 | `page`, `limit` | `?page=2&limit=20` | offset pagination; `page` 1–10 000 (default 1); `limit` 1–100 (default 20) |
-| `cursor`, `limit` | `?cursor=Y2t4...&limit=20` | cursor pagination for feeds/large tables; opaque base64url cursor |
+| `cursor`, `limit` | `?cursor=eyJmIjoi...&limit=20` | cursor pagination for feeds/large tables; opaque base64url cursor from `meta.nextCursor` |
 | `sort` | `?sort=-createdAt,name` | comma list, `-` = desc; only the resource's SORTABLE fields; `id` tiebreaker always appended |
 | `search` | `?search=john` | trimmed, 2–100 chars; case-insensitive `contains` over the SEARCHABLE fields |
 | filters | `?status=ACTIVE&createdFrom=2025-01-01` | flat, explicitly declared DTO properties only; ranges use `<field>From` / `<field>To`; multiple values = repeated param (`?status=A&status=B`) |

@@ -1,5 +1,5 @@
 import { Injectable } from '@nestjs/common';
-import { Prisma } from '@prisma/client';
+import { AuditLog, Prisma } from '@prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
 
 @Injectable()
@@ -17,18 +17,17 @@ export class AuditRepository {
     await this.db(tx).auditLog.create({ data, select: { id: true } });
   }
 
-  async findPage(args: {
-    where: Prisma.AuditLogWhereInput;
-    orderBy: Prisma.AuditLogOrderByWithRelationInput[];
-    select: Prisma.AuditLogSelect;
-    skip: number;
-    take: number;
-  }) {
-    const [items, total] = await this.prisma.$transaction([
-      this.prisma.auditLog.findMany(args),
-      this.prisma.auditLog.count({ where: args.where }),
-    ]);
-    return { items, total };
+  // One keyset page (see cursorWhere); the select always includes the id
+  findMany(
+    args: {
+      where: Prisma.AuditLogWhereInput;
+      orderBy: Prisma.AuditLogOrderByWithRelationInput[];
+      select: Prisma.AuditLogSelect;
+      take: number;
+    },
+    tx?: Prisma.TransactionClient,
+  ): Promise<Array<Partial<AuditLog> & { id: string }>> {
+    return this.db(tx).auditLog.findMany(args);
   }
 
   // In batches, so a large backlog never becomes one long-running delete

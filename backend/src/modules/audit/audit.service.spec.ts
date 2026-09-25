@@ -1,6 +1,7 @@
 import { BadRequestException } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 import { ErrorCode } from '../../common/constants/error-codes';
+import { CursorSort, encodeCursor } from '../../common/query';
 import { RequestContext } from '../../common/context/request-context';
 import { AuditAction, AuditEntity } from './audit.constants';
 import { AuditRepository } from './audit.repository';
@@ -22,6 +23,12 @@ const ALL_FIELDS_SELECT = {
   createdAt: true,
 };
 
+const AT = new Date('2026-06-01T08:00:00.000Z');
+const NEWEST_FIRST: CursorSort<string> = {
+  field: 'createdAt',
+  direction: 'desc',
+};
+
 const buildQuery = (overrides: Partial<ListAuditLogsQueryDto> = {}) =>
   Object.assign(new ListAuditLogsQueryDto(), overrides);
 
@@ -34,7 +41,7 @@ describe('AuditService', () => {
   beforeEach(() => {
     repository = {
       create: jest.fn().mockResolvedValue(undefined),
-      findPage: jest.fn().mockResolvedValue({ items: [], total: 0 }),
+      findMany: jest.fn().mockResolvedValue([]),
       deleteOlderThan: jest.fn().mockResolvedValue(7),
     } as unknown as jest.Mocked<AuditRepository>;
 
@@ -133,11 +140,13 @@ describe('AuditService', () => {
 
   describe('list', () => {
     it('returns the first page of all entries, newest first, with every whitelisted field', async () => {
-      const page = { items: [{ id: 'log-1' }], total: 1 };
-      repository.findPage.mockResolvedValue(page as never);
+      repository.findMany.mockResolvedValue([{ id: 'log-1' }]);
 
-      await expect(service.list(buildQuery())).resolves.toBe(page);
-      expect(repository.findPage).toHaveBeenCalledWith({
+      await expect(service.list(buildQuery())).resolves.toEqual({
+        items: [{ id: 'log-1' }],
+        meta: { limit: 20, nextCursor: null, hasMore: false },
+      });
+      expect(repository.findMany).toHaveBeenCalledWith({
         where: {
           action: undefined,
           actorId: undefined,
@@ -145,10 +154,9 @@ describe('AuditService', () => {
           entityId: undefined,
           createdAt: undefined,
         },
-        orderBy: [{ createdAt: 'desc' }, { id: 'asc' }],
+        orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
         select: ALL_FIELDS_SELECT,
-        skip: 0,
-        take: 20,
+        take: 21,
       });
     });
 
@@ -162,7 +170,7 @@ describe('AuditService', () => {
         }),
       );
 
-      expect(repository.findPage.mock.calls[0][0].where).toMatchObject({
+      expect(repository.findMany.mock.calls[0][0].where).toMatchObject({
         action: 'user.password_changed',
         actorId: 'user-1',
         entity: 'user',
@@ -183,37 +191,79 @@ describe('AuditService', () => {
     ])('filters by a date range with %s', async (_case, range) => {
       await service.list(buildQuery(range));
 
-      expect(repository.findPage.mock.calls[0][0].where.createdAt).toEqual({
+      expect(repository.findMany.mock.calls[0][0].where.createdAt).toEqual({
         gte: range.createdFrom,
         lte: range.createdTo,
       });
     });
 
-    it('sorts by createdAt with an id tiebreaker', async () => {
+    it('sorts oldest first with an id tiebreaker in the same direction', async () => {
       await service.list(buildQuery({ sort: 'createdAt' }));
 
-      expect(repository.findPage.mock.calls[0][0].orderBy).toEqual([
+      expect(repository.findMany.mock.calls[0][0].orderBy).toEqual([
         { createdAt: 'asc' },
         { id: 'asc' },
       ]);
     });
 
-    it('selects only the requested fields, always with the id', async () => {
-      await service.list(buildQuery({ fields: 'action,createdAt' }));
+    it('returns only the requested fields plus id, selecting createdAt for the cursor', async () => {
+      repository.findMany.mockResolvedValue([
+        { id: 'log-1', action: 'user.registered', createdAt: AT },
+      ]);
 
-      expect(repository.findPage.mock.calls[0][0].select).toEqual({
+      const { items } = await service.list(buildQuery({ fields: 'action' }));
+
+      expect(repository.findMany.mock.calls[0][0].select).toEqual({
         id: true,
         action: true,
         createdAt: true,
       });
+      expect(items).toEqual([{ id: 'log-1', action: 'user.registered' }]);
     });
 
-    it('pages with skip and take', async () => {
-      await service.list(buildQuery({ page: 3, limit: 10 }));
+    it('fetches one extra row to tell whether another page follows', async () => {
+      const rows = [1, 2, 3].map((n) => ({
+        id: `log-${n}`,
+        createdAt: new Date(AT.getTime() - n * 1000),
+      }));
+      repository.findMany.mockResolvedValue(rows);
 
-      expect(repository.findPage).toHaveBeenCalledWith(
-        expect.objectContaining({ skip: 20, take: 10 }),
+      const { items, meta } = await service.list(buildQuery({ limit: 2 }));
+
+      expect(repository.findMany).toHaveBeenCalledWith(
+        expect.objectContaining({ take: 3 }),
       );
+      expect(items).toEqual(rows.slice(0, 2));
+      expect(meta).toEqual({
+        limit: 2,
+        nextCursor: encodeCursor(NEWEST_FIRST, rows[1]),
+        hasMore: true,
+      });
+    });
+
+    it('continues below the cursor, ANDed with the filters so a date range still applies', async () => {
+      const cursor = encodeCursor(NEWEST_FIRST, { id: 'log-2', createdAt: AT });
+      const createdFrom = new Date('2026-01-01T00:00:00.000Z');
+
+      await service.list(buildQuery({ cursor, createdFrom, limit: 2 }));
+
+      const args = repository.findMany.mock.calls[0][0];
+      expect(args.where).toEqual({
+        AND: [
+          expect.objectContaining({
+            createdAt: { gte: createdFrom, lte: undefined },
+          }),
+          {
+            createdAt: { lte: AT },
+            OR: [
+              { createdAt: { lt: AT } },
+              { createdAt: AT, id: { lt: 'log-2' } },
+            ],
+          },
+        ],
+      });
+      expect(args).not.toHaveProperty('cursor');
+      expect(args).not.toHaveProperty('skip');
     });
 
     it.each([
@@ -223,6 +273,15 @@ describe('AuditService', () => {
         { sort: 'action' },
       ],
       ['an unknown field', { fields: 'action,password' }],
+      ['a malformed cursor', { cursor: 'not-a-cursor' }],
+      [
+        'a cursor from another sort',
+        {
+          sort: 'createdAt',
+          cursor: encodeCursor(NEWEST_FIRST, { id: 'log-2', createdAt: AT }),
+        },
+      ],
+      ['two sort fields', { sort: 'createdAt,-createdAt' }],
     ])(
       'returns 400 INVALID_QUERY_PARAM for %s without querying',
       async (_case, query) => {
@@ -234,7 +293,7 @@ describe('AuditService', () => {
             errorCode: ErrorCode.INVALID_QUERY_PARAM,
           }),
         });
-        expect(repository.findPage).not.toHaveBeenCalled();
+        expect(repository.findMany).not.toHaveBeenCalled();
       },
     );
   });

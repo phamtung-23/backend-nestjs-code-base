@@ -17,6 +17,8 @@ import { UserResponseDto } from '../users/dto/user-response.dto';
 import { PublicUser } from '../users/interfaces/user.interface';
 import { AuthErrorCode, AuthMessage } from './auth.constants';
 import { AuthService } from './auth.service';
+import { PasswordService } from './password.service';
+import { RegistrationService } from './registration.service';
 import { CurrentUser } from './decorators/current-user.decorator';
 import { Public } from './decorators/public.decorator';
 import { RateLimit } from './decorators/rate-limit.decorator';
@@ -43,7 +45,11 @@ const ONE_MINUTE = 60_000;
 @ApiTags('Authentication')
 @Controller('auth')
 export class AuthController {
-  constructor(private readonly authService: AuthService) {}
+  constructor(
+    private readonly authService: AuthService,
+    private readonly registrationService: RegistrationService,
+    private readonly passwordService: PasswordService,
+  ) {}
 
   @ApiOperation({
     summary: 'Register a new account',
@@ -64,7 +70,7 @@ export class AuthController {
   @Idempotent()
   @Post('register')
   async register(@Body() dto: RegisterDto) {
-    const user = await this.authService.register(dto);
+    const user = await this.registrationService.register(dto);
     return ResponseHelper.success(
       UserResponseDto.from(user),
       AuthMessage.REGISTERED,
@@ -107,7 +113,7 @@ export class AuthController {
   @HttpCode(HttpStatus.OK)
   @Post('verify-email')
   async verifyEmail(@Body() dto: VerifyEmailDto) {
-    await this.authService.verifyEmail(dto);
+    await this.registrationService.verifyEmail(dto);
     return ResponseHelper.success(null, 'Email verified');
   }
 
@@ -119,7 +125,7 @@ export class AuthController {
   @HttpCode(HttpStatus.OK)
   @Post('resend-verification')
   resendVerification(@Body() dto: ResendVerificationDto) {
-    this.authService.resendVerification(dto.email);
+    this.registrationService.resendVerification(dto.email);
     return ResponseHelper.success(null, AuthMessage.VERIFICATION_SENT);
   }
 
@@ -131,7 +137,7 @@ export class AuthController {
   @HttpCode(HttpStatus.OK)
   @Post('forgot-password')
   forgotPassword(@Body() dto: ForgotPasswordDto) {
-    this.authService.forgotPassword(dto.email);
+    this.passwordService.forgotPassword(dto.email);
     return ResponseHelper.success(null, AuthMessage.PASSWORD_RESET_SENT);
   }
 
@@ -147,7 +153,7 @@ export class AuthController {
   @HttpCode(HttpStatus.OK)
   @Post('reset-password')
   async resetPassword(@Body() dto: ResetPasswordDto) {
-    await this.authService.resetPassword(dto);
+    await this.passwordService.resetPassword(dto);
     return ResponseHelper.success(null, 'Password reset. Please log in again.');
   }
 
@@ -169,7 +175,11 @@ export class AuthController {
     @Body() dto: ChangePasswordDto,
     @ClientMetaParam() client: ClientMeta,
   ) {
-    const tokens = await this.authService.changePassword(user.id, dto, client);
+    const tokens = await this.passwordService.changePassword(
+      user.id,
+      dto,
+      client,
+    );
     return ResponseHelper.success(
       AuthTokensResponseDto.from(tokens),
       'Password changed',

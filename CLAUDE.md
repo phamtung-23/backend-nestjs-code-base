@@ -21,7 +21,8 @@ backend/                  NestJS app — run every yarn/npx command from here
   src/main.ts             bootstrap: create app, AppLogger, setupApp, listen
   src/app.setup.ts        app wiring: trust proxy, request id, helmet, CORS, ValidationPipe, versioning, Swagger
   src/app.module.ts       global modules (ConfigModule + env validation) + APP_GUARD / APP_INTERCEPTOR / APP_FILTER
-  src/config/             env.validation.ts — every env var, validated at startup
+  src/config/             env.validation.ts — every env var, validated at startup; typed namespaces
+                          (app, auth, mail, redis) injected with @Inject(authConfig.KEY)
   src/common/             generic building blocks: constants, context, decorators, filters, helpers,
                           idempotency, interceptors, logger, middleware, pipes, query, throttler
   src/prisma/             PrismaService (global module)
@@ -82,20 +83,21 @@ future e2e tests.
 
 | Building block | Status | Rule |
 | --- | --- | --- |
-| Response envelope (`ResponseInterceptor`, `ResponseHelper`) | ✅ (detects envelopes heuristically) | api-design |
+| Response envelope (`ResponseInterceptor`, `ResponseHelper`, `SuccessEnvelope` class) | ✅ | api-design |
 | URI versioning, `/health` (version-neutral, DB ping) | ✅ | api-design |
 | Global rate limit (`ThrottlerGuard`, Redis storage shared by instances, memory fallback) | ✅ | security |
 | Refresh tokens: separate secret, `jti`, SHA-256 hash at rest, atomic rotation, families + reuse detection, revoked on password change/reset | ✅ | security |
 | Email verification required for password login | ✅ | security |
 | OTP attempt limit via conditional update | ✅ | security |
 | Error format with `errorCode` / `details` / `requestId`, Prisma error mapping, 5xx logging (`GlobalExceptionFilter`, `validationExceptionFactory`) | ✅ | errors |
-| List query helpers: `ListQueryDto`, `ProjectionQueryDto`, `parseSort` / `buildSelect` / `buildSearch` / `pageMeta` (`src/common/query`), DTO transform helpers | ✅ offset pagination (first user: `modules/audit`); cursor helpers ❌ | api-design |
+| List query helpers (`src/common/query`): offset (`ListQueryDto`, `pageMeta`; reference: new-resource template) and cursor (`CursorListQueryDto`, keyset helpers `parseCursorSort` / `cursorWhere` / `cursorOrderBy` / `cursorSelect` / `cursorPage`; reference: `modules/audit`), plus `ProjectionQueryDto`, `parseSort` / `buildSelect` / `buildSearch`, DTO transform helpers | ✅ | api-design |
 | Swagger decorators for the envelope: `ApiEnvelopeResponse`, `ApiErrorResponse` | ✅ | api-design |
 | Secure-by-default auth: global `JwtAuthGuard` + `@Public()`, `@CurrentUser()`, `@ClientMetaParam()` | ✅ | security |
 | RBAC: `@Roles()` + `RolesGuard`; `isActive` enforced on every request | ✅ | security |
 | CORS from `ALLOWED_ORIGINS`, helmet, `SWAGGER_ENABLED` flag (`src/app.setup.ts`) | ✅ | security |
 | Startup env validation (`src/config/env.validation.ts`) | ✅ | architecture |
-| Typed config namespaces (`registerAs`) | ❌ (code reads `ConfigService.get('KEY')`) | architecture |
+| Typed config namespaces (`registerAs`: `appConfig`, `authConfig`, `mailConfig`, `redisConfig` in `src/config`) | ✅ | architecture |
+| Mail behind a port (`MAIL_SENDER` → `SmtpMailSender`, templates in `mail/templates`, masked addresses in logs) | ✅ | architecture |
 | Request ID (`X-Request-Id`, `RequestContext`) + log correlation (`AppLogger`) | ✅ | cross-cutting |
 | Audit log (`AuditLog` model, global `AuditService.log(entry, tx)`, `GET /v1/audit-logs` for admins) | ✅ | cross-cutting |
 | Idempotency (`@Idempotent()` + `IdempotencyInterceptor`, Redis) | ✅ | cross-cutting |
@@ -105,10 +107,6 @@ future e2e tests.
 
 ## Known deviations (legacy — fix when touching, never copy)
 
-- `MailService` logs recipient email addresses in full, keeps HTML templates inline, and depends on nodemailer
-  directly instead of a port.
-- `ResponseInterceptor` treats any object with `status` and `message` keys as an envelope; return data through
-  `ResponseHelper` or DTOs that don't have both keys.
 - `refresh_tokens.token` (plaintext, nullable, unused) is the pending contract step of the expand/contract migration
   `20260925000000_hash_refresh_tokens`: once no deployment can roll back past it, add a migration that drops `token`
   and makes `tokenHash` required.

@@ -228,3 +228,10 @@ export function validateEnv(
   }
   return env;
 }
+
+// For the registerAs namespaces in this folder. ConfigModule has validated the
+// env (and put .env values and defaults into process.env) before they run;
+// validating again yields the same typed values, with defaults for empty vars.
+export function readEnv(): EnvironmentVariables {
+  return validateEnv(process.env);
+}

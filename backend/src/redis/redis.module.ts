@@ -5,22 +5,22 @@ import {
   Module,
   OnApplicationShutdown,
 } from '@nestjs/common';
-import { ConfigService } from '@nestjs/config';
 import { createClient } from 'redis';
+import { RedisConfig, redisConfig } from '../config/redis.config';
 import { REDIS_CLIENT, RedisClient } from './redis.constants';
 
 const MAX_RECONNECT_DELAY_MS = 5000;
 
-export function createRedisClient(config: ConfigService): RedisClient {
+export function createRedisClient(config: RedisConfig): RedisClient {
   const logger = new Logger('Redis');
   const client = createClient({
     socket: {
-      host: config.get<string>('REDIS_HOST'),
-      port: config.get<number>('REDIS_PORT'),
+      host: config.host,
+      port: config.port,
       reconnectStrategy: (retries) =>
         Math.min(retries * 200, MAX_RECONNECT_DELAY_MS),
     },
-    password: config.get<string>('REDIS_PASSWORD') || undefined,
+    password: config.password || undefined,
     // Fail fast while disconnected instead of queueing commands: callers fall
     // back (rate limiting) or answer 503 (idempotency) rather than hang
     disableOfflineQueue: true,
@@ -52,7 +52,7 @@ export function createRedisClient(config: ConfigService): RedisClient {
   providers: [
     {
       provide: REDIS_CLIENT,
-      inject: [ConfigService],
+      inject: [redisConfig.KEY],
       useFactory: createRedisClient,
     },
   ],

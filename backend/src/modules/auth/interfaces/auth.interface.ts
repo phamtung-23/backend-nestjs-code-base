@@ -19,3 +19,6 @@ export interface AuthTokens {
 export interface AuthSession extends AuthTokens {
   user: PublicUser;
 }
+
+// How a session was started, recorded in its session.started audit entry
+export type SessionMethod = 'password' | 'code' | 'password_change';

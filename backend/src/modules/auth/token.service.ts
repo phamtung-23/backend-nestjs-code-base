@@ -1,9 +1,14 @@
-import { Injectable, Logger, UnauthorizedException } from '@nestjs/common';
-import { ConfigService } from '@nestjs/config';
+import {
+  Inject,
+  Injectable,
+  Logger,
+  UnauthorizedException,
+} from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
 import { Prisma, RefreshToken } from '@prisma/client';
 import { createHash, randomUUID } from 'node:crypto';
 import { ClientMeta } from '../../common/interfaces/client-meta.interface';
+import { AuthConfig, authConfig } from '../../config/auth.config';
 import { PrismaService } from '../../prisma/prisma.service';
 import { PublicUser } from '../users/interfaces/user.interface';
 import { AuditAction, AuditEntity } from '../audit/audit.constants';
@@ -14,7 +19,11 @@ import {
   REFRESH_REUSE_GRACE_MS,
   REVOKED_TOKEN_RETENTION_MS,
 } from './auth.constants';
-import { AuthTokens, JwtPayload } from './interfaces/auth.interface';
+import {
+  AuthTokens,
+  JwtPayload,
+  SessionMethod,
+} from './interfaces/auth.interface';
 import { RefreshTokenRepository } from './refresh-token.repository';
 
 // Only a hash is stored, so a database leak doesn't hand out live sessions
@@ -34,24 +43,44 @@ export class TokenService {
     private readonly refreshTokenRepository: RefreshTokenRepository,
     private readonly usersService: UsersService,
     private readonly auditService: AuditService,
-    configService: ConfigService,
+    @Inject(authConfig.KEY) config: AuthConfig,
   ) {
-    this.refreshSecret = configService.getOrThrow<string>('JWT_REFRESH_SECRET');
-    // Defaults live in env validation
-    this.accessExpiresIn = configService.getOrThrow<string>(
-      'JWT_ACCESS_EXPIRES_IN',
-    );
-    this.refreshExpiresIn = configService.getOrThrow<string>(
-      'JWT_REFRESH_EXPIRES_IN',
-    );
+    this.refreshSecret = config.jwtRefreshSecret;
+    this.accessExpiresIn = config.accessTokenTtl;
+    this.refreshExpiresIn = config.refreshTokenTtl;
   }
 
-  // A new familyId starts a new session; rotation passes the current one on
-  async issue(
+  // A new session: a fresh token family, recorded so later session.ended /
+  // session.reuse_detected entries point at a session the audit trail knows.
+  // Runs in the caller's transaction, which holds the user lock.
+  async startSession(
     user: Pick<PublicUser, 'id' | 'email' | 'role'>,
     client: ClientMeta,
-    tx?: Prisma.TransactionClient,
-    familyId: string = randomUUID(),
+    tx: Prisma.TransactionClient,
+    method: SessionMethod,
+  ): Promise<AuthTokens> {
+    const familyId = randomUUID();
+    const tokens = await this.issue(user, client, tx, familyId);
+    await this.auditService.log(
+      {
+        action: AuditAction.SESSION_STARTED,
+        entity: AuditEntity.SESSION,
+        entityId: familyId,
+        actorId: user.id,
+        metadata: { method },
+      },
+      tx,
+    );
+    return tokens;
+  }
+
+  // Private: new sessions go through startSession (audited), rotation keeps
+  // the family it is given
+  private async issue(
+    user: Pick<PublicUser, 'id' | 'email' | 'role'>,
+    client: ClientMeta,
+    tx: Prisma.TransactionClient,
+    familyId: string,
   ): Promise<AuthTokens> {
     const accessToken = this.jwtService.sign(
       { sub: user.id, email: user.email, role: user.role },

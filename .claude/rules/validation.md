@@ -13,7 +13,7 @@ paths:
   parameter. Reusable `@Transform` functions (`trimString`, `normalizeEmail`, `toArray`, `toBoolean`, `toDate`,
   `toEndOfDay`) live in `src/common/helpers/transform.helpers.ts`.
 - One DTO per operation: `CreateUserDto`, `UpdateUserDto extends PartialType(CreateUserDto)`,
-  `ListUsersQueryDto extends ListQueryDto`, `UserResponseDto`. Import `PartialType` / `PickType` / `OmitType`
+  `ListUsersQueryDto extends ListQueryDto` (or `CursorListQueryDto`), `UserResponseDto`. Import `PartialType` / `PickType` / `OmitType`
   from `@nestjs/swagger` so the docs follow.
 - Every property has class-validator decorators plus `@ApiProperty` / `@ApiPropertyOptional`. Optional
   properties put `@IsOptional()` first.

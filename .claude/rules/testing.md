@@ -8,7 +8,11 @@ paths:
 # Testing
 
 - Unit tests sit next to the file (`users.service.spec.ts`). Instantiate the class directly with hand-written jest
-  mocks, as `auth.service.spec.ts` does; use `Test.createTestingModule` only to test DI wiring.
+  mocks, as `auth.service.spec.ts` does; use `Test.createTestingModule` only to test DI wiring. Config is a plain
+  object of the namespace type (`{ jwtSecret: '...' } as AuthConfig`).
+- Mocks and builders shared by a module's specs go in `<module>/testing/*.fixtures.ts` (excluded from the build;
+  reference: `modules/auth/testing/auth.fixtures.ts`). Small stateless collaborators may be real instances over the
+  mocks (the auth specs use real `CredentialsService` / `CodeDeliveryService`) so a flow is tested end to end.
 - Cover every branch of service logic: happy path, every thrown error (assert the exception class **and** the
   `errorCode`), limits, and concurrency outcomes (`count: 0` from a conditional update).
 - Assert behavior: exact Prisma `where` / `data` arguments, returned shapes, absence of sensitive fields. Don't
@@ -23,5 +27,6 @@ paths:
   so `createTestApp()` flushes Redis — `t.mailbox.code(email, kind)` for emailed codes, and `uniqueEmail()`; tests
   share the database, so never rely on it being empty.
 - Every new or changed endpoint gets e2e coverage of its happy path, auth/roles, validation and main errors.
-- Tests never hit real SMTP or the network — mock nodemailer and other adapters.
+- Tests never hit real SMTP or the network — mock the port (`MAIL_SENDER`) or the SDK (`jest.mock('nodemailer')` in
+  the adapter's own spec).
 - Test names describe behavior: `it('returns 409 when the email already exists')`.

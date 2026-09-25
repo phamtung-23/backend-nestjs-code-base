@@ -8,11 +8,12 @@ import {
   MaxLength,
 } from 'class-validator';
 import { toDate, toEndOfDay } from '../../../common/helpers/transform.helpers';
-import { ListQueryDto } from '../../../common/query';
+import { CursorListQueryDto } from '../../../common/query';
 
-// No `include` (entries have no relations) and no `search` (see
-// AUDIT_SORTABLE in audit.constants.ts)
-export class ListAuditLogsQueryDto extends OmitType(ListQueryDto, [
+// Cursor pagination: the table only grows, so no counts and no OFFSET. No
+// `include` (entries have no relations) and no `search` (see AUDIT_SORTABLE in
+// audit.constants.ts).
+export class ListAuditLogsQueryDto extends OmitType(CursorListQueryDto, [
   'include',
   'search',
 ] as const) {

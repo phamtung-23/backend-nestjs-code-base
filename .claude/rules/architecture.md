@@ -60,14 +60,19 @@ export interface MailSender {
 // service: constructor(@Inject(MAIL_SENDER) private readonly mailSender: MailSender) {}
 ```
 
+Reference: `modules/mail` (`MAIL_SENDER` → `SmtpMailSender`; `MailService` builds messages from `templates/`).
+
 ## Configuration
 
-- Read config through `ConfigService` only — never `process.env` outside bootstrap/config files.
+- Read config through the typed namespaces in `src/config/*.config.ts` (`appConfig`, `authConfig`, `mailConfig`,
+  `redisConfig`, loaded by `ConfigModule.forRoot({ load: CONFIG_NAMESPACES })`):
+  `constructor(@Inject(authConfig.KEY) private readonly config: AuthConfig)`, or `inject: [authConfig.KEY]` in a
+  factory. Don't use `ConfigService.get('KEY')` in app code, and never `process.env` outside `src/config`. Unit
+  tests pass a plain config object.
 - Every env var is declared and validated in `src/config/env.validation.ts` (`EnvironmentVariables`, wired through
-  `ConfigModule.forRoot({ validate })`); the app refuses to start on invalid config. Validated values are typed
-  (numbers, booleans), so `ConfigService.get<number>('PORT')` returns a number. Required values also use
-  `getOrThrow` where they're read. Grouping settings with `registerAs` namespaces (e.g. `auth.accessTokenTtl`) is
-  still a target — see CLAUDE.md "Foundations status".
+  `ConfigModule.forRoot({ validate })`); the app refuses to start on invalid config. The namespaces build on the
+  validated, typed values (`readEnv()`), so defaults and conversions live in one place. A new setting goes into a
+  namespace (or a new `registerAs` file added to `CONFIG_NAMESPACES`).
 - No magic numbers or strings in services: durations, limits and keys go into `<name>.constants.ts` or config.
 - A new env var goes to `EnvironmentVariables`, `.env.sample`, `backend/.env.example`, every `docker-compose*.yml` backend `environment`
   block, and the validation schema — in the same change.

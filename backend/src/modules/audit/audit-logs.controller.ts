@@ -19,20 +19,19 @@ export class AuditLogsController {
   @ApiOperation({
     summary: 'List audit log entries (admin)',
     description:
-      'Filter by action, actor, entity or date range; sort by createdAt or action; newest first by default.',
+      'Filter by action, actor, entity or date range; newest first by default (sort=createdAt for oldest first). ' +
+      'Cursor pagination: pass meta.nextCursor as ?cursor= for the next page.',
   })
-  @ApiEnvelopeResponse(AuditLogResponseDto, { paginated: true })
+  @ApiEnvelopeResponse(AuditLogResponseDto, { paginated: 'cursor' })
   @ApiErrorResponse(400, 'VALIDATION_FAILED', 'INVALID_QUERY_PARAM')
   @ApiErrorResponse(401, 'UNAUTHENTICATED')
   @ApiErrorResponse(403, 'FORBIDDEN')
   @Get()
   async list(@Query() query: ListAuditLogsQueryDto) {
-    const { items, total } = await this.auditService.list(query);
-    return ResponseHelper.paginated(
+    const { items, meta } = await this.auditService.list(query);
+    return ResponseHelper.cursorPaginated(
       items,
-      total,
-      query.page,
-      query.limit,
+      meta,
       'Audit log entries retrieved',
     );
   }

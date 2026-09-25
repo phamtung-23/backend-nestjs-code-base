@@ -23,7 +23,7 @@ You write focused, behavior-driven unit tests for this NestJS + Prisma backend.
   limits and edge cases, concurrency outcomes (`updateMany` returning `{ count: 0 }`).
 - Assert exact Prisma `where` / `data` / `select` arguments for writes and security-relevant reads, and that
   responses never contain `password` or tokens that shouldn't be there.
-- No real network, SMTP, database or timers — mock adapters (`jest.mock('nodemailer')`), `bcryptjs`, and time when
+- No real network, SMTP, database or timers — mock ports (`MAIL_SENDER`) and adapters (`jest.mock('nodemailer')`), `bcryptjs`, and time when
   needed.
 - Test names describe behavior (`it('returns 409 when the email already exists')`).
 - Don't change production code to make tests pass. If the code looks wrong, stop and report it with evidence.

@@ -1,5 +1,5 @@
 import { UnauthorizedException } from '@nestjs/common';
-import { ConfigService } from '@nestjs/config';
+import { AuthConfig } from '../../../config/auth.config';
 import { UserRole } from '@prisma/client';
 import { PublicUser } from '../../users/interfaces/user.interface';
 import { UsersService } from '../../users/users.service';
@@ -22,22 +22,33 @@ const buildUser = (overrides: Partial<PublicUser> = {}): PublicUser => ({
 
 describe('JwtStrategy', () => {
   let usersService: jest.Mocked<UsersService>;
-  let config: ConfigService;
   let strategy: JwtStrategy;
 
   beforeEach(() => {
     usersService = {
       findById: jest.fn(),
     } as unknown as jest.Mocked<UsersService>;
-    config = {
-      getOrThrow: jest.fn().mockReturnValue('access-secret'),
-    } as unknown as ConfigService;
-
-    strategy = new JwtStrategy(usersService, config);
+    strategy = new JwtStrategy(usersService, {
+      jwtSecret: 'access-secret',
+    } as AuthConfig);
   });
 
-  it('verifies access tokens with JWT_SECRET', () => {
-    expect(config.getOrThrow).toHaveBeenCalledWith('JWT_SECRET');
+  it('verifies access tokens with the configured JWT secret', () => {
+    // passport-jwt keeps the key behind this provider
+    const provider = (
+      strategy as unknown as {
+        _secretOrKeyProvider: (
+          request: unknown,
+          token: string,
+          done: (error: unknown, key: string) => void,
+        ) => void;
+      }
+    )._secretOrKeyProvider;
+    const done = jest.fn();
+
+    provider(null, 'raw-token', done);
+
+    expect(done).toHaveBeenCalledWith(null, 'access-secret');
   });
 
   it('returns the active user for an access token payload', async () => {

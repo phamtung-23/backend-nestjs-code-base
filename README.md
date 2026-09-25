@@ -414,11 +414,11 @@ docker compose logs -f traefik
 | `REDIS_HOST`              | Redis host                                                 | `redis`                                       |
 | `REDIS_PORT`              | Redis port                                                 | `6379`                                        |
 | `REDIS_PASSWORD`          | Redis auth password (required by base compose)             | Required                                      |
-| `SMTP_HOST`               | SMTP server host                                           | Required                                      |
+| `SMTP_HOST`               | SMTP server host                                           | `localhost`                                   |
 | `SMTP_PORT`               | SMTP server port                                           | `587`                                         |
-| `SMTP_USER`               | SMTP username                                              | Required                                      |
-| `SMTP_PASS`               | SMTP password                                              | Required                                      |
-| `SMTP_FROM`               | SMTP from email                                            | Required                                      |
+| `SMTP_USER`               | SMTP username (omit for a local catcher such as Mailpit)   | none                                          |
+| `SMTP_PASS`               | SMTP password                                              | none                                          |
+| `SMTP_FROM`               | SMTP from email                                            | `noreply@example.com`                         |
 
 ## 🔄 Deployment
 

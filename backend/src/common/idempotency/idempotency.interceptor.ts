@@ -11,14 +11,15 @@ import {
   ServiceUnavailableException,
   UnprocessableEntityException,
 } from '@nestjs/common';
-import { ConfigService } from '@nestjs/config';
 import { Request, Response } from 'express';
 import { createHmac, hkdfSync } from 'node:crypto';
 import { from, Observable, of, throwError } from 'rxjs';
 import { catchError, mergeMap } from 'rxjs/operators';
+import { AuthConfig, authConfig } from '../../config/auth.config';
 import { REDIS_CLIENT, RedisClient } from '../../redis/redis.constants';
 import { withTimeout } from '../../redis/redis.helpers';
 import { ErrorCode } from '../constants/error-codes';
+import { SuccessEnvelope } from '../helpers/response.helper';
 
 export const IDEMPOTENCY_HEADER = 'Idempotency-Key';
 export const IDEMPOTENT_REPLAY_HEADER = 'Idempotent-Replayed';
@@ -31,7 +32,14 @@ const PROCESSING_TTL_MS = 60 * 1000;
 
 type StoredRecord =
   | { state: 'processing'; fingerprint: string }
-  | { state: 'done'; fingerprint: string; body: unknown }
+  | {
+      state: 'done';
+      fingerprint: string;
+      body: unknown;
+      // The handler returned a SuccessEnvelope, which JSON turns into a plain
+      // object: rebuilt on replay so ResponseInterceptor doesn't wrap it again
+      enveloped: boolean;
+    }
   | {
       state: 'failed';
       fingerprint: string;
@@ -61,16 +69,10 @@ export class IdempotencyInterceptor implements NestInterceptor {
 
   constructor(
     @Inject(REDIS_CLIENT) private readonly redis: RedisClient,
-    config: ConfigService,
+    @Inject(authConfig.KEY) config: AuthConfig,
   ) {
     this.fingerprintKey = Buffer.from(
-      hkdfSync(
-        'sha256',
-        config.getOrThrow<string>('JWT_SECRET'),
-        '',
-        'idempotency-fingerprint',
-        32,
-      ),
+      hkdfSync('sha256', config.jwtSecret, '', 'idempotency-fingerprint', 32),
     );
   }
 
@@ -114,7 +116,12 @@ export class IdempotencyInterceptor implements NestInterceptor {
       mergeMap(async (body: unknown) => {
         await this.save(
           storeKey,
-          { state: 'done', fingerprint, body },
+          {
+            state: 'done',
+            fingerprint,
+            body,
+            enveloped: body instanceof SuccessEnvelope,
+          },
           RESULT_TTL_MS,
         );
         return body;
@@ -179,7 +186,11 @@ export class IdempotencyInterceptor implements NestInterceptor {
       );
     }
     // Same handler, so Nest applies the same status code as the original
-    return of(record.body);
+    return of(
+      record.enveloped
+        ? SuccessEnvelope.restore(record.body as SuccessEnvelope<unknown>)
+        : record.body,
+    );
   }
 
   // A missing or unreadable record is treated as still in progress (409): the

@@ -28,11 +28,12 @@ paths:
 - `changes` holds only changed fields (`{ field: { from, to } }`) with secrets removed; `metadata` holds context
   that isn't a change (`{ method: 'password' }`). Never put passwords, tokens or codes in either.
 - An event that must not slow the response (e.g. a failed login, which would otherwise reveal that the account
-  exists) is logged in the background instead of inside a transaction.
+  exists) is logged in the background (`runInBackground` from `src/common/helpers/background.helper.ts`) instead of
+  inside a transaction.
 - The table has no foreign keys (entries outlive what they mention) and is append-only: no update/delete
-  endpoints. Admins read it through `GET /v1/audit-logs` (filters, sort by `createdAt`, pagination, fields; no
-  `search`: `action` is low-cardinality). Its exact `total` counts scan; a high-volume project should move this list
-  to cursor pagination.
+  endpoints. Admins read it through `GET /v1/audit-logs` (filters, sort by `createdAt`, fields; keyset cursor
+  pagination with `?cursor=` / `limit`, meta `limit` / `nextCursor` / `hasMore`, no totals; no `search`: `action`
+  is low-cardinality).
 - Retention: `AuditRetentionTask` deletes entries older than `AUDIT_RETENTION_DAYS` (365 — a legal decision, set
   it per project) every night in batches. Housekeeping, not an API.
 

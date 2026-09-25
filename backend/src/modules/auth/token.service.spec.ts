@@ -1,5 +1,4 @@
 import { HttpException, Logger, UnauthorizedException } from '@nestjs/common';
-import { ConfigService } from '@nestjs/config';
 import { JwtService } from '@nestjs/jwt';
 import { Prisma, RefreshToken, UserRole } from '@prisma/client';
 import { createHash } from 'node:crypto';
@@ -10,6 +9,7 @@ import { AuditService } from '../audit/audit.service';
 import { PublicUser } from '../users/interfaces/user.interface';
 import { UsersService } from '../users/users.service';
 import { AuthErrorCode, REFRESH_REUSE_GRACE_MS } from './auth.constants';
+import { AuthConfig } from '../../config/auth.config';
 import { RefreshTokenRepository } from './refresh-token.repository';
 import { TokenService } from './token.service';
 
@@ -58,22 +58,14 @@ const buildStoredToken = (
   ...overrides,
 });
 
-const CONFIG: Record<string, string | undefined> = {
-  JWT_REFRESH_SECRET: 'refresh-secret',
-  JWT_ACCESS_EXPIRES_IN: '30m',
-  JWT_REFRESH_EXPIRES_IN: '14d',
+const CONFIG: AuthConfig = {
+  jwtSecret: 'access-secret',
+  jwtRefreshSecret: 'refresh-secret',
+  accessTokenTtl: '30m',
+  refreshTokenTtl: '14d',
+  otpMaxAttempts: 3,
+  otpExpiryMinutes: 15,
 };
-
-const buildConfig = (values: Record<string, string | undefined>) =>
-  ({
-    getOrThrow: jest.fn((key: string) => {
-      const value = values[key];
-      if (value === undefined) {
-        throw new TypeError(`Configuration key "${key}" does not exist`);
-      }
-      return value;
-    }),
-  }) as unknown as ConfigService;
 
 async function expectHttpError(
   promise: Promise<unknown>,
@@ -99,7 +91,6 @@ describe('TokenService', () => {
   let repository: jest.Mocked<RefreshTokenRepository>;
   let usersService: jest.Mocked<UsersService>;
   let auditService: jest.Mocked<AuditService>;
-  let config: ConfigService;
   let loggerWarn: jest.SpyInstance;
   let service: TokenService;
 
@@ -110,16 +101,13 @@ describe('TokenService', () => {
       repository,
       usersService,
       auditService,
-      config,
+      CONFIG,
     );
 
   const refreshSignCall = () =>
     jwtService.sign.mock.calls.find(
       ([payload]) => (payload as { type?: string }).type === 'refresh',
     );
-
-  const storedFamilyIds = () =>
-    repository.create.mock.calls.map(([data]) => data.familyId);
 
   // The user row lock must be taken before each of the given calls
   const expectLockedBefore = (
@@ -173,8 +161,6 @@ describe('TokenService', () => {
       .spyOn(Logger.prototype, 'warn')
       .mockImplementation(() => undefined);
 
-    config = buildConfig(CONFIG);
-
     service = createService();
   });
 
@@ -184,17 +170,8 @@ describe('TokenService', () => {
   });
 
   describe('configuration', () => {
-    it.each(Object.keys(CONFIG))(
-      'fails fast when %s is not configured',
-      (missing) => {
-        config = buildConfig({ ...CONFIG, [missing]: undefined });
-
-        expect(() => createService()).toThrow(missing);
-      },
-    );
-
     it('uses the configured secret and lifetimes', async () => {
-      await service.issue(buildUser(), client);
+      await service.startSession(buildUser(), client, tx, 'password');
 
       expect(jwtService.sign).toHaveBeenCalledWith(expect.any(Object), {
         expiresIn: '30m',
@@ -206,9 +183,64 @@ describe('TokenService', () => {
     });
   });
 
-  describe('issue', () => {
+  describe('startSession', () => {
+    it('issues a pair in a new family and audits the session start in the same transaction', async () => {
+      const result = await service.startSession(
+        buildUser(),
+        client,
+        tx,
+        'code',
+      );
+
+      expect(result).toEqual({
+        accessToken: 'access-token',
+        refreshToken: 'refresh-token',
+      });
+      const familyId = repository.create.mock.calls[0][0].familyId;
+      expect(familyId).toMatch(UUID_PATTERN);
+      expect(repository.create).toHaveBeenCalledWith(
+        expect.objectContaining({ familyId, userId: 'user-1' }),
+        tx,
+      );
+      expect(auditService.log).toHaveBeenCalledWith(
+        {
+          action: AuditAction.SESSION_STARTED,
+          entity: AuditEntity.SESSION,
+          entityId: familyId,
+          actorId: 'user-1',
+          metadata: { method: 'code' },
+        },
+        tx,
+      );
+      // Audited only once the token row exists
+      expect(repository.create.mock.invocationCallOrder[0]).toBeLessThan(
+        auditService.log.mock.invocationCallOrder[0],
+      );
+    });
+
+    it('starts a new family every time', async () => {
+      await service.startSession(buildUser(), client, tx, 'password');
+      await service.startSession(buildUser(), client, tx, 'password');
+
+      const [first, second] = repository.create.mock.calls.map(
+        (call) => call[0].familyId,
+      );
+      expect(first).not.toBe(second);
+    });
+
+    it('fails, rolling the session back with the transaction, when the audit entry cannot be written', async () => {
+      const error = new Error('audit insert failed');
+      auditService.log.mockRejectedValue(error);
+
+      await expect(
+        service.startSession(buildUser(), client, tx, 'password'),
+      ).rejects.toBe(error);
+    });
+  });
+
+  describe('issued pair (startSession)', () => {
     it('signs the access token with the default secret and the configured lifetime', async () => {
-      await service.issue(buildUser(), client, tx);
+      await service.startSession(buildUser(), client, tx, 'password');
 
       expect(jwtService.sign).toHaveBeenCalledWith(
         { sub: 'user-1', email: 'jane@example.com', role: UserRole.CUSTOMER },
@@ -217,7 +249,7 @@ describe('TokenService', () => {
     });
 
     it('signs the refresh token with the refresh secret, its lifetime and a random jti', async () => {
-      await service.issue(buildUser(), client, tx);
+      await service.startSession(buildUser(), client, tx, 'password');
 
       expect(jwtService.sign).toHaveBeenCalledWith(
         {
@@ -230,8 +262,8 @@ describe('TokenService', () => {
     });
 
     it('gives every refresh token a different jti', async () => {
-      await service.issue(buildUser(), client);
-      await service.issue(buildUser(), client);
+      await service.startSession(buildUser(), client, tx, 'password');
+      await service.startSession(buildUser(), client, tx, 'password');
 
       const jtis = jwtService.sign.mock.calls
         .map(([payload]) => (payload as { jti?: string }).jti)
@@ -241,7 +273,7 @@ describe('TokenService', () => {
     });
 
     it('stores only the sha256 hash of the refresh token, with its family, expiry and client, in the given transaction', async () => {
-      await service.issue(buildUser(), client, tx);
+      await service.startSession(buildUser(), client, tx, 'password');
 
       expect(jwtService.decode).toHaveBeenCalledWith('refresh-token');
       expect(repository.create).toHaveBeenCalledWith(
@@ -260,24 +292,10 @@ describe('TokenService', () => {
       );
     });
 
-    it('starts a new family on every call without a familyId', async () => {
-      await service.issue(buildUser(), client);
-      await service.issue(buildUser(), client);
-
-      const [first, second] = storedFamilyIds();
-      expect(first).toMatch(UUID_PATTERN);
-      expect(second).toMatch(UUID_PATTERN);
-      expect(first).not.toBe(second);
-    });
-
-    it('keeps the family it is given', async () => {
-      await service.issue(buildUser(), client, tx, 'family-1');
-
-      expect(storedFamilyIds()).toEqual(['family-1']);
-    });
-
     it('returns the raw token pair to the caller', async () => {
-      await expect(service.issue(buildUser(), client, tx)).resolves.toEqual({
+      await expect(
+        service.startSession(buildUser(), client, tx, 'password'),
+      ).resolves.toEqual({
         accessToken: 'access-token',
         refreshToken: 'refresh-token',
       });
