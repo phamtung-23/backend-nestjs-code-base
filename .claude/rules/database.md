@@ -28,16 +28,37 @@ paths:
   immutable (a PreToolUse hook blocks edits).
 - Review the SQL. Destructive changes (DROP, type narrowing, NOT NULL on a populated table) need an
   expand → backfill → contract plan across releases.
-- Containers run `prisma migrate deploy` on start, so every migration must stay compatible with the version that
-  is still running and with a rollback to it. Reference: `20260925000000_hash_refresh_tokens` (expand: new column,
-  old one kept nullable) and `20260924000100_lowercase_user_emails` (data fix that can't fail + `NOT VALID` check).
+- Containers run `prisma migrate deploy` on start (`start:prod:migrate`). This repo deploys one backend replica with
+  `docker compose up -d`, which stops the old container before the new one starts and migrates, so no old version
+  is serving meanwhile. Every migration must still stay compatible with a rollback to the previous release, and —
+  once a project runs several replicas or zero-downtime deploys — with the version that is still running.
+  Reference: `20260925000000_hash_refresh_tokens` (expand: new column, old one kept nullable) and
+  `20260924000100_lowercase_user_emails` (data fix that can't fail + `NOT VALID` check).
 - A data migration that could fail on existing rows must not run after destructive steps of the same release; make
   it unable to fail, and document the manual follow-up in the migration.
-- Prisma runs a migration file as one transaction, so the first `ALTER TABLE` holds its ACCESS EXCLUSIVE lock
-  until the file ends. On populated tables: never `ADD COLUMN ... DEFAULT <volatile>` (`gen_random_uuid()`,
+- Prisma runs a migration file as one transaction, so every lock it takes is held until the file ends: once a
+  statement takes ACCESS EXCLUSIVE (most `ALTER TABLE` forms, `DROP`), the rest of the file runs under it.
+  `VALIDATE CONSTRAINT` takes only SHARE UPDATE EXCLUSIVE, so it goes first in its file. On populated tables: never `ADD COLUMN ... DEFAULT <volatile>` (`gen_random_uuid()`,
   `random()` — rewrites the whole table); add the column nullable, set the default for new rows, backfill in
-  batches in a later step, then `NOT NULL` via a validated `CHECK ... NOT VALID`. Avoid full-table `UPDATE`s in the
-  same file as DDL. `CREATE INDEX CONCURRENTLY` needs a migration of its own.
+  batches in a later step, then `NOT NULL` via a validated `CHECK ... NOT VALID` — added in one migration file,
+  validated and turned into `NOT NULL` in the next (reference: `20260928000000_require_refresh_token_hash` +
+  `20260928000100_drop_refresh_token_plaintext`). Avoid full-table `UPDATE`s in the same file as DDL.
+  `CREATE INDEX CONCURRENTLY` needs a migration of its own.
+- `lock_timeout`: not with this repo's stop-first deploys (nothing serves traffic while migrating, and a timeout
+  only turns a wait into a failed deploy). With zero-downtime deploys, start DDL files with
+  `SET LOCAL lock_timeout = '3s'` (`LOCAL`: a plain `SET` leaks into the following files of the same run) and
+  make the deploy step retry.
+- A failed migration (error, lock timeout) is rolled back — its file is one transaction — but Prisma records it as
+  failed, and every later `migrate deploy` stops with P3009, so the container restart-loops. Fix the cause, then
+  `docker compose -f docker-compose.yml -f docker-compose.<env>.yml run --rm backend npx prisma migrate resolve
+  --rolled-back <migration>` and deploy again.
+- Dropping or renaming a column is the contract step: only when no running version and no rollback target still
+  references it. Queries that return model rows (`find*`, `create`, `update`, `upsert`, `delete`) read every column
+  without an explicit `select`, so a release whose schema still declares the column fails (P2022) once it's gone.
+  Release N marks the field `@ignore` (the client stops reading it; `migrate diff` generates nothing); release
+  N+1 deletes the field, which generates the `DROP COLUMN`. Both in one release is fine only with this repo's
+  single-replica stop-first deploy and nobody rolling back past it (reference:
+  `20260928000100_drop_refresh_token_plaintext`).
 - `prisma/seed.ts` is for dev data only.
 
 ## Queries

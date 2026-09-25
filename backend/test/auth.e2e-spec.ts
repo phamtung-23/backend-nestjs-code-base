@@ -141,7 +141,13 @@ describe('Authentication (e2e)', () => {
       where: { tokenHash: sha256(session.refreshToken) },
     });
     expect(stored).not.toBeNull();
-    expect(stored?.token).toBeNull();
+    expect(JSON.stringify(stored)).not.toContain(session.refreshToken);
+
+    // No column left that could hold the token itself
+    const columns = await t.prisma.$queryRaw<Array<{ column_name: string }>>`
+      SELECT column_name FROM information_schema.columns
+      WHERE table_name = 'refresh_tokens'`;
+    expect(columns.map((column) => column.column_name)).not.toContain('token');
   });
 
   it('logout ends the session; logout-all ends every session', async () => {

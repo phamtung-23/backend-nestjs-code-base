@@ -45,8 +45,6 @@ const buildStoredToken = (
 ): RefreshToken => ({
   id: 'rt-1',
   tokenHash: sha256('old-refresh-token'),
-  // Deprecated plaintext column, kept only for rollback; always null here
-  token: null,
   familyId: 'family-1',
   userId: 'user-1',
   expiresAt: new Date(NOW.getTime() + DAY_MS),

@@ -68,17 +68,11 @@ enum OtpType {
 // Refresh Token model for JWT refresh mechanism
 model RefreshToken {
   id        String    @id @default(cuid())
-  // SHA-256 of the token; the token itself is never stored. Nullable only
-  // during the expand/contract migration (see `token` below).
-  tokenHash String?   @unique
-  // Deprecated: plaintext column of the previous release, kept nullable so that
-  // release can still run after this migration (rollback). Never read or
-  // written by this code. Drop it, and make tokenHash required, in a later
-  // migration once no deployment can roll back past this one.
-  token     String?   @unique
+  // SHA-256 of the token; the token itself is never stored
+  tokenHash String    @unique
   // One family per login: rotation keeps it, and reuse of a rotated token
-  // revokes the whole family. The DB default gives rows inserted by the
-  // previous release (rollback) a family of their own.
+  // revokes the whole family. The app always sets it; the DB default only
+  // guarantees rows written outside the app a family of their own.
   familyId  String    @default(dbgenerated("(gen_random_uuid())::text"))
   expiresAt DateTime
   isRevoked Boolean   @default(false)

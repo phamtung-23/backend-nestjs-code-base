@@ -107,8 +107,5 @@ future e2e tests.
 
 ## Known deviations (legacy — fix when touching, never copy)
 
-- `refresh_tokens.token` (plaintext, nullable, unused) is the pending contract step of the expand/contract migration
-  `20260925000000_hash_refresh_tokens`: once no deployment can roll back past it, add a migration that drops `token`
-  and makes `tokenHash` required.
 - Accounts whose emails differed only by case before `20260924000100_lowercase_user_emails` are left untouched and
   can't log in until merged by hand (query in the migration file).

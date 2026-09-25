@@ -47,8 +47,10 @@ npx prisma migrate diff \
       rest of the file keeps holding (database rule, "Migrations").
 - [ ] Indexes exist for new FKs and for filter/sort columns; no index duplicates a unique constraint. On large, busy
       tables, prefer `CREATE INDEX CONCURRENTLY` in its own migration (it can't run inside a transaction).
-- [ ] Backward compatible with the currently deployed code: containers run `prisma migrate deploy` on start, before
-      the old version stops.
+- [ ] Compatible with a rollback to the previous release, and with the still-running version wherever deploys
+      overlap (several replicas, blue/green). This repo's single-replica `docker compose up -d` stops the old
+      container before the new one migrates. Column drops/renames: `@ignore` first, delete the field a release later
+      (database rule, "Migrations").
 
 ## 4. Apply and wire up
 
