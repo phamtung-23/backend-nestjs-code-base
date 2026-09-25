@@ -3,8 +3,9 @@ import { ApiExtraModels, ApiResponse, getSchemaPath } from '@nestjs/swagger';
 
 // Documents the success envelope around a response DTO in Swagger:
 // @ApiEnvelopeResponse(ArticleResponseDto, { paginated: true })
+// @ApiEnvelopeResponse(null) for actions that respond with `data: null`
 export function ApiEnvelopeResponse(
-  model: Type<unknown>,
+  model: Type<unknown> | null,
   options: {
     status?: number;
     description?: string;
@@ -13,10 +14,12 @@ export function ApiEnvelopeResponse(
   } = {},
 ) {
   const { status = 200, description, isArray, paginated } = options;
-  const item = { $ref: getSchemaPath(model) };
+  const item = model
+    ? { $ref: getSchemaPath(model) }
+    : { type: 'object', nullable: true, example: null };
 
   return applyDecorators(
-    ApiExtraModels(model),
+    ...(model ? [ApiExtraModels(model)] : []),
     ApiResponse({
       status,
       description,

@@ -29,12 +29,16 @@ paths:
 - Review the SQL. Destructive changes (DROP, type narrowing, NOT NULL on a populated table) need an
   expand → backfill → contract plan across releases.
 - Containers run `prisma migrate deploy` on start, so every migration must stay compatible with the version that
-  is still running.
+  is still running and with a rollback to it. Reference: `20260925000000_hash_refresh_tokens` (expand: new column,
+  old one kept nullable) and `20260924000100_lowercase_user_emails` (data fix that can't fail + `NOT VALID` check).
+- A data migration that could fail on existing rows must not run after destructive steps of the same release; make
+  it unable to fail, and document the manual follow-up in the migration.
 - `prisma/seed.ts` is for dev data only.
 
 ## Queries
 
-- Access Prisma through the module repository (auth still calls `PrismaService` directly — legacy).
+- Access Prisma through the module repository (reference: `modules/users/users.repository.ts`). Services use
+  `PrismaService` only for `$transaction`.
 - Always `select` what the caller needs (share select constants). Fetch `password` / secret columns only in
   credential checks.
 - **No queries inside loops (N+1).** Use nested `select`/`include` (Prisma batches relation loads),
@@ -63,8 +67,9 @@ await this.mailService.sendWelcome(user.email); // side effects after commit
 
 ## Concurrency
 
-- DB constraints enforce uniqueness — don't check-then-insert. Catch P2002 → 409.
-- State transitions use atomic conditional writes (reference: `AuthService.consumeOtp`):
+- DB constraints enforce uniqueness — a pre-check is fine for a friendly error, but still catch P2002 → 409
+  (`isPrismaError(error, 'P2002')` from `src/common/helpers/prisma.helpers.ts`; see `AuthService.register`).
+- State transitions use atomic conditional writes (reference: `OtpRepository.registerAttempt` / `markUsed`, `RefreshTokenRepository.revokeIfActive`):
 
 ```ts
 const { count } = await tx.order.updateMany({
@@ -81,7 +86,9 @@ if (count === 0) {
   `VERSION_CONFLICT` (412 when driven by `If-Match`).
 - Counters use `{ increment: n }`, never read-modify-write.
 - Pessimistic locks (`SELECT ... FOR UPDATE` via `$queryRaw` inside a transaction) only when a conditional update
-  can't express the invariant.
+  can't express the invariant — e.g. "revoke all of a user's tokens" vs. "insert a token" under READ COMMITTED
+  (reference: `UsersRepository.lockForUpdate`, used by every session-issuing/revoking transaction).
+- Housekeeping deletes run in batches outside a transaction (reference: `OtpRepository.deleteStale`).
 
 ## Performance
 

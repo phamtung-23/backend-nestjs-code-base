@@ -1,7 +1,9 @@
 import { Request } from 'express';
-import { User as PrismaUser } from '@prisma/client';
+import { PublicUser } from '../../users/interfaces/user.interface';
 
-export type User = Omit<PrismaUser, 'password'>;
+export interface AuthenticatedRequest extends Request {
+  user: PublicUser;
+}
 
 export interface JwtPayload {
   sub: string;
@@ -9,6 +11,11 @@ export interface JwtPayload {
   type?: 'refresh';
 }
 
-export interface AuthenticatedRequest extends Request {
-  user: User;
+export interface AuthTokens {
+  accessToken: string;
+  refreshToken: string;
+}
+
+export interface AuthSession extends AuthTokens {
+  user: PublicUser;
 }

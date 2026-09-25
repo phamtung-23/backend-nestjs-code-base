@@ -12,18 +12,18 @@ datasource db {
 
 // User model for authentication
 model User {
-  id              String   @id @default(cuid())
-  email           String   @unique
+  id              String    @id @default(cuid())
+  email           String    @unique
   password        String
   firstName       String?
   lastName        String?
   avatar          String?
-  role            UserRole @default(CUSTOMER)
-  isActive        Boolean  @default(true)
-  isEmailVerified Boolean  @default(false)
+  role            UserRole  @default(CUSTOMER)
+  isActive        Boolean   @default(true)
+  isEmailVerified Boolean   @default(false)
   lastLoginAt     DateTime?
-  createdAt       DateTime @default(now())
-  updatedAt       DateTime @updatedAt
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
 
   // Relations
   otpCodes      Otp[]
@@ -52,8 +52,9 @@ model Otp {
   userId String
   user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
 
-  @@index([userId])
-  @@index([code])
+  // Matches the lookups (latest active code per user and type) and cleanup
+  @@index([userId, type, createdAt])
+  @@index([expiresAt])
   @@map("otps")
 }
 
@@ -67,7 +68,14 @@ enum OtpType {
 // Refresh Token model for JWT refresh mechanism
 model RefreshToken {
   id        String   @id @default(cuid())
-  token     String   @unique
+  // SHA-256 of the token; the token itself is never stored. Nullable only
+  // during the expand/contract migration (see `token` below).
+  tokenHash String?  @unique
+  // Deprecated: plaintext column of the previous release, kept nullable so that
+  // release can still run after this migration (rollback). Never read or
+  // written by this code. Drop it, and make tokenHash required, in a later
+  // migration once no deployment can roll back past this one.
+  token     String?  @unique
   expiresAt DateTime
   isRevoked Boolean  @default(false)
   userAgent String?
@@ -79,6 +87,6 @@ model RefreshToken {
   user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@index([userId])
-  @@index([token])
+  @@index([expiresAt])
   @@map("refresh_tokens")
 }

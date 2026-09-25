@@ -45,10 +45,8 @@ DOMAIN=localhost
 FRONTEND_URL=http://localhost:3000
 
 # OTP Configuration
-OTP_EXPIRY_MINUTES=5
-OTP_MAX_ATTEMPTS=3
-OTP_RATE_LIMIT_MINUTES=1
-OTP_CODE_LENGTH=6
+OTP_EXPIRY_MINUTES=10
+OTP_MAX_ATTEMPTS=5
 
 # Redis Configuration
 REDIS_HOST=redis
@@ -402,16 +400,17 @@ docker compose logs -f traefik
 | `POSTGRES_DB`             | Database name                                              | `default`                                     |
 | `POSTGRES_PORT`           | Database port                                              | `5432`                                        |
 | `JWT_SECRET`              | JWT signing secret                                         | Required                                      |
-| `JWT_REFRESH_SECRET`      | Refresh token secret                                       | Required                                      |
+| `JWT_REFRESH_SECRET`      | Refresh token secret (must differ from `JWT_SECRET`)       | Required                                      |
+| `JWT_ACCESS_EXPIRES_IN`   | Access token lifetime (`15m`, `1h`, ...)                   | `15m`                                         |
+| `JWT_REFRESH_EXPIRES_IN`  | Refresh token lifetime                                     | `7d`                                          |
 | `NESTJS_PORT`             | Backend application port                                   | `3000`                                        |
 | `NESTJS_CONTAINER_PORT`   | Container port mapping                                     | `3000`                                        |
-| `ALLOWED_ORIGINS`         | CORS allowed origins                                       | `http://localhost:3000,http://localhost:8080` |
-| `API_PREFIX`              | API route prefix                                           | `api`                                         |
+| `ALLOWED_ORIGINS`         | CORS origins (exact, comma-separated)                      | dev: localhost:3000/5173; prod: none          |
+| `API_PREFIX`              | API route prefix (empty behind Traefik, which strips /api) | empty                                         |
+| `SWAGGER_ENABLED`         | Serve Swagger UI at `/docs`                                | on outside production, off in production      |
 | `FRONTEND_URL`            | Frontend URL for email links                               | `http://localhost:3000`                       |
-| `OTP_EXPIRY_MINUTES`      | OTP expiration time                                        | `5`                                           |
-| `OTP_MAX_ATTEMPTS`        | Max OTP attempts                                           | `3`                                           |
-| `OTP_RATE_LIMIT_MINUTES`  | OTP rate limit                                             | `1`                                           |
-| `OTP_CODE_LENGTH`         | OTP code length                                            | `6`                                           |
+| `OTP_EXPIRY_MINUTES`      | OTP lifetime in minutes (1-60)                             | `10`                                          |
+| `OTP_MAX_ATTEMPTS`        | Wrong guesses allowed per code (1-20)                      | `5`                                           |
 | `REDIS_HOST`              | Redis host                                                 | `redis`                                       |
 | `REDIS_PORT`              | Redis port                                                 | `6379`                                        |
 | `REDIS_PASSWORD`          | Redis auth password (required by base compose)             | Required                                      |

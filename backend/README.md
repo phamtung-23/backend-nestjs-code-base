@@ -102,7 +102,8 @@ REDIS_PORT=6379
 
 # JWT
 JWT_SECRET=your-super-secret-jwt-key
-JWT_EXPIRES_IN=7d
+JWT_ACCESS_EXPIRES_IN=15m
+JWT_REFRESH_EXPIRES_IN=7d
 
 # API
 PORT=3000
@@ -153,6 +154,8 @@ After seeding, you can login with:
 - Password: `Customer@123`
 
 ## 📚 API Endpoints
+
+Full contract: Swagger UI at `/docs`. Auth model and error codes: [documents/AUTHENTICATION.md](documents/AUTHENTICATION.md).
 
 ### Authentication
 
@@ -232,7 +235,7 @@ Content-Type: application/json
 #### Change Password (Protected)
 
 ```http
-PATCH /api/v1/auth/change-password
+POST /api/v1/auth/change-password
 Authorization: Bearer <your-jwt-token>
 Content-Type: application/json
 
@@ -279,7 +282,7 @@ POST /api/v1/auth/refresh-token
 Content-Type: application/json
 
 {
-  "refresh_token": "your-refresh-token-here"
+  "refreshToken": "your-refresh-token-here"
 }
 ```
 
@@ -290,7 +293,7 @@ POST /api/v1/auth/logout
 Content-Type: application/json
 
 {
-  "refresh_token": "your-refresh-token-here"
+  "refreshToken": "your-refresh-token-here"
 }
 ```
 
@@ -305,10 +308,12 @@ Authorization: Bearer <your-jwt-token>
 
 Passwords must:
 
-- Be at least 6 characters long
+- Be 8–72 characters long
 - Contain at least one uppercase letter
 - Contain at least one lowercase letter
 - Contain at least one number
+
+Login accepts any existing password; the rules apply when a password is chosen (register, reset, change).
 
 ## 🛡️ Security Features
 

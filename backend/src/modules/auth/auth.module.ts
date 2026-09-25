@@ -2,28 +2,39 @@ import { Module } from '@nestjs/common';
 import { JwtModule } from '@nestjs/jwt';
 import { PassportModule } from '@nestjs/passport';
 import { ConfigService } from '@nestjs/config';
-import { AuthService } from './auth.service';
-import { AuthController } from './auth.controller';
 import { MailModule } from '../mail/mail.module';
+import { UsersModule } from '../users/users.module';
+import { AuthCleanupTask } from './auth-cleanup.task';
+import { AuthController } from './auth.controller';
+import { AuthService } from './auth.service';
+import { OtpRepository } from './otp.repository';
+import { OtpService } from './otp.service';
+import { RefreshTokenRepository } from './refresh-token.repository';
 import { JwtStrategy } from './strategies/jwt.strategy';
-import { LocalStrategy } from './strategies/local.strategy';
+import { TokenService } from './token.service';
 
 @Module({
   imports: [
     PassportModule,
     JwtModule.registerAsync({
       inject: [ConfigService],
+      // Lifetimes are passed per token by TokenService
       useFactory: (configService: ConfigService) => ({
         secret: configService.getOrThrow<string>('JWT_SECRET'),
-        signOptions: {
-          expiresIn: configService.get('JWT_EXPIRES_IN'),
-        },
       }),
     }),
     MailModule,
+    UsersModule,
   ],
   controllers: [AuthController],
-  providers: [AuthService, JwtStrategy, LocalStrategy],
-  exports: [AuthService],
+  providers: [
+    AuthService,
+    TokenService,
+    OtpService,
+    OtpRepository,
+    RefreshTokenRepository,
+    JwtStrategy,
+    AuthCleanupTask,
+  ],
 })
 export class AuthModule {}

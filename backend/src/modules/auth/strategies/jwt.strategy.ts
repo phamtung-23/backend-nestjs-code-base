@@ -2,13 +2,14 @@ import { Injectable, UnauthorizedException } from '@nestjs/common';
 import { PassportStrategy } from '@nestjs/passport';
 import { ConfigService } from '@nestjs/config';
 import { ExtractJwt, Strategy } from 'passport-jwt';
-import { AuthService } from '../auth.service';
+import { PublicUser } from '../../users/interfaces/user.interface';
+import { UsersService } from '../../users/users.service';
 import { JwtPayload } from '../interfaces/auth.interface';
 
 @Injectable()
 export class JwtStrategy extends PassportStrategy(Strategy) {
   constructor(
-    private authService: AuthService,
+    private readonly usersService: UsersService,
     configService: ConfigService,
   ) {
     super({
@@ -18,14 +19,15 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
     });
   }
 
-  async validate(payload: JwtPayload) {
+  async validate(payload: JwtPayload): Promise<PublicUser | null> {
     // Refresh tokens must never authenticate API calls, even if both secrets
     // are configured with the same value
     if (payload.type === 'refresh') {
       throw new UnauthorizedException();
     }
 
-    const user = await this.authService.findById(payload.sub);
-    return user;
+    // Deleted or disabled accounts lose access now, not when the token expires
+    const user = await this.usersService.findById(payload.sub);
+    return user?.isActive ? user : null;
   }
 }

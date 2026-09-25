@@ -7,11 +7,13 @@ import {
 import { ApiOperation, ApiResponse, ApiTags } from '@nestjs/swagger';
 import { SkipThrottle } from '@nestjs/throttler';
 import { ApiErrorResponse } from '../../common/decorators/api-error-response.decorator';
+import { Public } from '../auth/decorators/public.decorator';
 import { PrismaService } from '../../prisma/prisma.service';
 
 // Served at /health (no version segment, no API prefix) for the Docker
 // healthchecks in docker-compose.*.yml
 @ApiTags('Health')
+@Public()
 @SkipThrottle()
 @Controller({ path: 'health', version: VERSION_NEUTRAL })
 export class HealthController {

@@ -5,10 +5,9 @@ fieldsets, a whitelisted include, ownership checks, optimistic locking and unit 
 tested, and exercised over HTTP against PostgreSQL. Copy it, then rename (`Article` → `Thing`, `articles` →
 `things`) and adapt the fields, filters and whitelists to the new resource.
 
-Prerequisites (CLAUDE.md "Foundations status"): error codes, transform helpers, the list query contract and the
-Swagger envelope/error decorators already exist in `backend/src/common`; `@CurrentUser()` is in `foundations.md`
-section 5 until the auth building blocks land. When `JwtAuthGuard` becomes global, drop the
-controller-level `@UseGuards(JwtAuthGuard)`.
+Prerequisites: all in the repo — error codes, transform helpers, the list query contract and the Swagger decorators
+(`backend/src/common`), plus `@CurrentUser()` / `@Public()` / `@Roles()` (`backend/src/modules/auth/decorators`).
+Authentication is global: routes are protected unless marked `@Public()`.
 
 ## Prisma model (`backend/prisma/schema.prisma`)
 
@@ -441,7 +440,6 @@ import {
   Patch,
   Post,
   Query,
-  UseGuards,
 } from '@nestjs/common';
 import {
   ApiBearerAuth,
@@ -454,8 +452,7 @@ import { ApiErrorResponse } from '../../common/decorators/api-error-response.dec
 import { ResponseHelper } from '../../common/helpers/response.helper';
 import { ProjectionQueryDto } from '../../common/query';
 import { CurrentUser } from '../auth/decorators/current-user.decorator';
-import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
-import { User } from '../auth/interfaces/auth.interface';
+import { PublicUser } from '../users/interfaces/user.interface';
 import { ArticlesService } from './articles.service';
 import { ArticleResponseDto } from './dto/article-response.dto';
 import { CreateArticleDto } from './dto/create-article.dto';
@@ -464,7 +461,6 @@ import { UpdateArticleDto } from './dto/update-article.dto';
 
 @ApiTags('Articles')
 @ApiBearerAuth('JWT-auth')
-@UseGuards(JwtAuthGuard) // drop once JwtAuthGuard is the global APP_GUARD
 @Controller('articles')
 export class ArticlesController {
   constructor(private readonly articlesService: ArticlesService) {}
@@ -496,7 +492,7 @@ export class ArticlesController {
   @ApiOperation({ summary: 'Create an article' })
   @ApiEnvelopeResponse(ArticleResponseDto, { status: HttpStatus.CREATED })
   @Post()
-  async create(@CurrentUser() user: User, @Body() dto: CreateArticleDto) {
+  async create(@CurrentUser() user: PublicUser, @Body() dto: CreateArticleDto) {
     const article = await this.articlesService.create(user.id, dto);
     return ResponseHelper.success(article, 'Article created');
   }
@@ -508,7 +504,7 @@ export class ArticlesController {
   @Patch(':id')
   async update(
     @Param('id') id: string,
-    @CurrentUser() user: User,
+    @CurrentUser() user: PublicUser,
     @Body() dto: UpdateArticleDto,
   ) {
     const article = await this.articlesService.update(id, user.id, dto);
@@ -522,7 +518,7 @@ export class ArticlesController {
   @Delete(':id')
   async remove(
     @Param('id') id: string,
-    @CurrentUser() user: User,
+    @CurrentUser() user: PublicUser,
   ): Promise<void> {
     await this.articlesService.remove(id, user.id);
   }
@@ -692,7 +688,8 @@ Add `ArticlesModule` to `imports` in `backend/src/app.module.ts`.
 - Filters: one explicit DTO property per filter, ranges as `<field>From` / `<field>To`, enums as arrays via `toArray`.
 - Every filter or sort column is covered by an index.
 - Drop `version` / `updateIfVersion` only if concurrent edits are impossible for this resource.
-- Resources without an owner: replace `assertOwner` with role checks (`@Roles`) or plain existence checks.
+- Resources without an owner: replace `assertOwner` with role checks (`@Roles(UserRole.ADMIN)`) or plain existence
+  checks. Public read endpoints get `@Public()`.
 - Multi-write operations (e.g. create + audit row) go through `prisma.$transaction(async (tx) => ...)`, passing `tx`
   to repository methods; emails and other side effects run after commit.
 - Add `@Idempotent()` to create/side-effect endpoints once the idempotency foundation exists.

@@ -1,519 +1,380 @@
 import {
+  ConflictException,
+  ForbiddenException,
   Injectable,
+  Logger,
   UnauthorizedException,
-  BadRequestException,
-  NotFoundException,
+  UnprocessableEntityException,
 } from '@nestjs/common';
-import { ConfigService } from '@nestjs/config';
-import { JwtService } from '@nestjs/jwt';
-import { OtpType } from '@prisma/client';
-import { randomInt, randomUUID } from 'crypto';
+import { OtpType, Prisma } from '@prisma/client';
+import * as bcrypt from 'bcryptjs';
+import { isPrismaError } from '../../common/helpers/prisma.helpers';
+import { ClientMeta } from '../../common/interfaces/client-meta.interface';
 import { PrismaService } from '../../prisma/prisma.service';
 import { MailService } from '../mail/mail.service';
-import * as bcrypt from 'bcryptjs';
-import { JwtPayload, User } from './interfaces/auth.interface';
-import { RegisterDto, ChangePasswordDto } from './dto/auth.dto';
+import { PublicUser } from '../users/interfaces/user.interface';
+import { UsersService } from '../users/users.service';
+import {
+  AuthErrorCode,
+  BCRYPT_ROUNDS,
+  DUMMY_PASSWORD_HASH,
+} from './auth.constants';
+import {
+  ChangePasswordDto,
+  LoginDto,
+  OtpCodeDto,
+  RegisterDto,
+  ResetPasswordDto,
+} from './dto/auth.dto';
+import { AuthSession, AuthTokens } from './interfaces/auth.interface';
+import { OtpService } from './otp.service';
+import { TokenService } from './token.service';
 
-const OTP_TTL_MS = 10 * 60 * 1000; // 10 minutes, matches the email templates
-
+// Orchestrates the auth flows. Codes live in OtpService, tokens in
+// TokenService, user data in UsersService.
+//
+// Concurrency: every transaction that issues or revokes a user's sessions or
+// codes starts with usersService.lockForUpdate, so e.g. a password reset can't
+// miss a refresh token that is being issued at the same moment.
 @Injectable()
 export class AuthService {
-  private readonly otpMaxAttempts: number;
-  private readonly refreshSecret: string;
+  private readonly logger = new Logger(AuthService.name);
 
   constructor(
-    private prisma: PrismaService,
-    private jwtService: JwtService,
-    private mailService: MailService,
-    configService: ConfigService,
-  ) {
-    this.otpMaxAttempts = Number(configService.get('OTP_MAX_ATTEMPTS')) || 5;
-    this.refreshSecret = configService.getOrThrow<string>('JWT_REFRESH_SECRET');
-  }
+    private readonly prisma: PrismaService,
+    private readonly usersService: UsersService,
+    private readonly otpService: OtpService,
+    private readonly tokenService: TokenService,
+    private readonly mailService: MailService,
+  ) {}
 
-  async validateUser(email: string, password: string): Promise<User | null> {
-    const user = await this.prisma.user.findUnique({
-      where: { email },
-    });
-
-    if (user && (await bcrypt.compare(password, user.password))) {
-      // eslint-disable-next-line @typescript-eslint/no-unused-vars
-      const { password: _, ...result } = user;
-      return result;
+  async register(dto: RegisterDto): Promise<PublicUser> {
+    if (await this.usersService.findByEmail(dto.email)) {
+      throw this.emailTaken();
     }
-    return null;
-  }
+    const passwordHash = await bcrypt.hash(dto.password, BCRYPT_ROUNDS);
 
-  async login(user: User, userAgent?: string, ipAddress?: string) {
-    const tokens = await this.issueTokens(user, userAgent, ipAddress);
-
-    return {
-      ...tokens,
-      user: {
-        id: user.id,
-        email: user.email,
-        firstName: user.firstName,
-        lastName: user.lastName,
-        role: user.role,
-        isEmailVerified: user.isEmailVerified,
-      },
-    };
-  }
-
-  async register(createUserDto: RegisterDto) {
-    const existingUser = await this.prisma.user.findUnique({
-      where: { email: createUserDto.email },
-    });
-
-    if (existingUser) {
-      throw new UnauthorizedException('User already exists');
-    }
-
-    const hashedPassword = await bcrypt.hash(createUserDto.password, 10);
-
-    const user = await this.prisma.user.create({
-      data: {
-        ...createUserDto,
-        password: hashedPassword,
-      },
-    });
-
-    // Generate and send verification OTP
-    const otpCode = await this.createOtp(user.id, 'VERIFICATION');
-    await this.mailService.sendVerificationOtp(user.email, otpCode);
-
-    // eslint-disable-next-line @typescript-eslint/no-unused-vars
-    const { password: _, ...result } = user;
-    return {
-      message:
-        'User registered successfully. Please check your email for the verification code.',
-      user: result,
-    };
-  }
-
-  async verifyEmail(email: string, otpCode: string) {
-    const user = await this.prisma.user.findUnique({
-      where: { email },
-    });
-
-    if (!user) {
-      throw new NotFoundException('User not found');
-    }
-
-    if (user.isEmailVerified) {
-      throw new BadRequestException('Email is already verified');
-    }
-
-    if (!(await this.consumeOtp(user.id, 'VERIFICATION', otpCode))) {
-      throw new BadRequestException('Invalid or expired verification code');
-    }
-
-    // Mark email as verified
-    await this.prisma.user.update({
-      where: { id: user.id },
-      data: { isEmailVerified: true },
-    });
-
-    return { message: 'Email verified successfully' };
-  }
-
-  async resendVerificationEmail(email: string) {
-    const user = await this.prisma.user.findUnique({
-      where: { email },
-    });
-
-    if (!user) {
-      throw new NotFoundException('User not found');
-    }
-
-    if (user.isEmailVerified) {
-      throw new BadRequestException('Email is already verified');
-    }
-
-    // Invalidate any existing verification OTPs
-    await this.prisma.otp.updateMany({
-      where: {
-        userId: user.id,
-        type: 'VERIFICATION',
-        isUsed: false,
-      },
-      data: { isUsed: true },
-    });
-
-    const otpCode = await this.createOtp(user.id, 'VERIFICATION');
-    await this.mailService.sendVerificationOtp(email, otpCode);
-
-    return { message: 'Verification code sent successfully' };
-  }
-
-  async forgotPassword(email: string) {
-    const user = await this.prisma.user.findUnique({
-      where: { email },
-    });
-
-    if (!user) {
-      // Don't reveal that the user doesn't exist
-      return {
-        message:
-          'If an account with that email exists, we have sent a password reset code.',
-      };
-    }
-
-    // Invalidate any existing password reset OTPs
-    await this.prisma.otp.updateMany({
-      where: {
-        userId: user.id,
-        type: 'PASSWORD_RESET',
-        isUsed: false,
-      },
-      data: { isUsed: true },
-    });
-
-    const otpCode = await this.createOtp(user.id, 'PASSWORD_RESET');
-    await this.mailService.sendPasswordResetOtp(email, otpCode);
-
-    return {
-      message:
-        'If an account with that email exists, we have sent a password reset code.',
-    };
-  }
-
-  async resetPassword(email: string, otpCode: string, newPassword: string) {
-    const user = await this.prisma.user.findUnique({
-      where: { email },
-    });
-
-    if (!user) {
-      throw new BadRequestException('User not found');
-    }
-
-    if (!(await this.consumeOtp(user.id, 'PASSWORD_RESET', otpCode))) {
-      throw new BadRequestException('Invalid or expired reset code');
-    }
-
-    // Update password
-    const hashedPassword = await bcrypt.hash(newPassword, 10);
-    await this.prisma.user.update({
-      where: { id: user.id },
-      data: { password: hashedPassword },
-    });
-
-    return { message: 'Password reset successfully' };
-  }
-
-  async changePassword(userId: string, changePasswordDto: ChangePasswordDto) {
-    const user = await this.prisma.user.findUnique({
-      where: { id: userId },
-    });
-
-    if (!user) {
-      throw new NotFoundException('User not found');
-    }
-
-    const isCurrentPasswordValid = await bcrypt.compare(
-      changePasswordDto.currentPassword,
-      user.password,
-    );
-
-    if (!isCurrentPasswordValid) {
-      throw new BadRequestException('Current password is incorrect');
-    }
-
-    const hashedNewPassword = await bcrypt.hash(
-      changePasswordDto.newPassword,
-      10,
-    );
-
-    await this.prisma.user.update({
-      where: { id: userId },
-      data: { password: hashedNewPassword },
-    });
-
-    return { message: 'Password changed successfully' };
-  }
-
-  async sendOtp(email: string) {
-    const user = await this.prisma.user.findUnique({
-      where: { email },
-    });
-
-    if (!user) {
-      throw new NotFoundException('User not found');
-    }
-
-    // Invalidate any existing unused OTPs for this user
-    await this.prisma.otp.updateMany({
-      where: {
-        userId: user.id,
-        isUsed: false,
-      },
-      data: {
-        isUsed: true,
-      },
-    });
-
-    const otpCode = await this.createOtp(user.id, 'LOGIN');
-    await this.mailService.sendOtpEmail(email, otpCode);
-
-    return { message: 'OTP sent successfully' };
-  }
-
-  async verifyOtp(
-    email: string,
-    otpCode: string,
-    userAgent?: string,
-    ipAddress?: string,
-  ) {
-    const user = await this.prisma.user.findUnique({
-      where: { email },
-    });
-
-    if (!user) {
-      throw new NotFoundException('User not found');
-    }
-
-    if (!(await this.consumeOtp(user.id, 'LOGIN', otpCode))) {
-      throw new BadRequestException('Invalid or expired OTP');
-    }
-
-    // Update last login
-    await this.prisma.user.update({
-      where: { id: user.id },
-      data: { lastLoginAt: new Date() },
-    });
-
-    return this.login(user, userAgent, ipAddress);
-  }
-
-  private async createOtp(userId: string, type: OtpType): Promise<string> {
-    const code = randomInt(100000, 1000000).toString();
-
-    await this.prisma.otp.create({
-      data: {
-        code,
-        expiresAt: new Date(Date.now() + OTP_TTL_MS),
-        type,
-        userId,
-      },
-    });
-
-    return code;
-  }
-
-  // Checks the latest active OTP of the given type. Every check counts as an
-  // attempt; once otpMaxAttempts is reached the OTP can no longer be used.
-  private async consumeOtp(
-    userId: string,
-    type: OtpType,
-    code: string,
-  ): Promise<boolean> {
-    const otp = await this.prisma.otp.findFirst({
-      where: {
-        userId,
-        type,
-        isUsed: false,
-        expiresAt: {
-          gt: new Date(),
-        },
-      },
-      orderBy: { createdAt: 'desc' },
-    });
-
-    if (!otp) {
-      return false;
-    }
-
-    // Conditional increment so parallel guesses can't exceed the limit
-    const counted = await this.prisma.otp.updateMany({
-      where: {
-        id: otp.id,
-        isUsed: false,
-        attempts: { lt: this.otpMaxAttempts },
-      },
-      data: { attempts: { increment: 1 } },
-    });
-
-    if (counted.count === 0 || otp.code !== code) {
-      return false;
-    }
-
-    // Conditional update so the same OTP can't be consumed twice concurrently
-    const consumed = await this.prisma.otp.updateMany({
-      where: { id: otp.id, isUsed: false },
-      data: { isUsed: true },
-    });
-
-    return consumed.count === 1;
-  }
-
-  // Clean up expired OTPs (can be called periodically)
-  async cleanupExpiredOtps() {
-    const deleted = await this.prisma.otp.deleteMany({
-      where: {
-        OR: [
-          {
-            expiresAt: {
-              lt: new Date(),
-            },
-          },
-          {
-            isUsed: true,
-            createdAt: {
-              lt: new Date(Date.now() - 86400000), // older than 24 hours
-            },
-          },
-        ],
-      },
-    });
-
-    return { message: `Cleaned up ${deleted.count} expired OTPs` };
-  }
-
-  async findById(id: string): Promise<User | null> {
-    const user = await this.prisma.user.findUnique({
-      where: { id },
-    });
-
-    if (!user) {
-      return null;
-    }
-
-    // eslint-disable-next-line @typescript-eslint/no-unused-vars
-    const { password: _, ...result } = user;
-    return result;
-  }
-
-  async refreshAccessToken(
-    refreshToken: string,
-    userAgent?: string,
-    ipAddress?: string,
-  ) {
-    // Verify refresh token JWT signature
-    let payload: JwtPayload;
+    let created: { user: PublicUser; code: string | null };
     try {
-      payload = this.jwtService.verify<JwtPayload>(refreshToken, {
-        secret: this.refreshSecret,
+      created = await this.prisma.$transaction(async (tx) => {
+        const user = await this.usersService.create(
+          {
+            email: dto.email,
+            passwordHash,
+            firstName: dto.firstName,
+            lastName: dto.lastName,
+          },
+          tx,
+        );
+        const code = await this.otpService.issue(
+          user.id,
+          OtpType.VERIFICATION,
+          tx,
+        );
+        return { user, code };
       });
-    } catch {
-      throw new UnauthorizedException('Invalid or expired refresh token');
+    } catch (error) {
+      // Lost a race with a concurrent registration of the same email
+      if (isPrismaError(error, 'P2002')) {
+        throw this.emailTaken();
+      }
+      throw error;
     }
 
-    if (payload.type !== 'refresh') {
-      throw new UnauthorizedException('Invalid or expired refresh token');
+    const { user, code } = created;
+    if (code) {
+      this.runInBackground(() =>
+        this.mailService.sendVerificationOtp(
+          user.email,
+          code,
+          this.otpService.expiryMinutes,
+        ),
+      );
     }
-
-    // Check if refresh token exists in database and is valid
-    const storedToken = await this.prisma.refreshToken.findUnique({
-      where: { token: refreshToken },
-      include: { user: true },
-    });
-
-    if (!storedToken) {
-      throw new UnauthorizedException('Refresh token not found');
-    }
-
-    if (storedToken.isRevoked) {
-      throw new UnauthorizedException('Refresh token has been revoked');
-    }
-
-    if (storedToken.expiresAt < new Date()) {
-      throw new UnauthorizedException('Refresh token has expired');
-    }
-
-    // Rotate: revoke the old refresh token and issue a new pair
-    await this.prisma.refreshToken.update({
-      where: { id: storedToken.id },
-      data: { isRevoked: true },
-    });
-
-    return this.issueTokens(storedToken.user, userAgent, ipAddress);
+    return user;
   }
 
-  private async issueTokens(
-    user: Pick<User, 'id' | 'email' | 'role'>,
-    userAgent?: string,
-    ipAddress?: string,
-  ) {
-    const accessToken = this.jwtService.sign(
-      { email: user.email, sub: user.id, role: user.role },
-      { expiresIn: '1d' },
+  async login(dto: LoginDto, client: ClientMeta): Promise<AuthSession> {
+    const record = await this.usersService.findWithPasswordByEmail(dto.email);
+    // Unknown emails are checked against a dummy hash so both cases take as long
+    const passwordMatches = await bcrypt.compare(
+      dto.password,
+      record?.password ?? DUMMY_PASSWORD_HASH,
     );
-
-    // Signed with a separate secret so it can never pass as an access token.
-    // jti keeps tokens unique when two are issued within the same second
-    // (the token column is unique).
-    const refreshToken = this.jwtService.sign(
-      { sub: user.id, type: 'refresh', jti: randomUUID() },
-      { secret: this.refreshSecret, expiresIn: '7d' },
-    );
-
-    const expiresAt = new Date();
-    expiresAt.setDate(expiresAt.getDate() + 7); // 7 days from now
-
-    await this.prisma.refreshToken.create({
-      data: {
-        token: refreshToken,
-        userId: user.id,
-        expiresAt,
-        userAgent,
-        ipAddress,
-      },
-    });
-
-    return {
-      access_token: accessToken,
-      refresh_token: refreshToken,
-    };
-  }
-
-  async revokeRefreshToken(refreshToken: string) {
-    const storedToken = await this.prisma.refreshToken.findUnique({
-      where: { token: refreshToken },
-    });
-
-    if (!storedToken) {
-      throw new NotFoundException('Refresh token not found');
+    if (!record || !passwordMatches) {
+      throw this.invalidCredentials();
     }
 
-    await this.prisma.refreshToken.update({
-      where: { id: storedToken.id },
-      data: { isRevoked: true },
-    });
+    const { password: verifiedHash, ...user } = record;
+    this.assertActive(user);
 
-    return { message: 'Refresh token revoked successfully' };
+    const session = await this.prisma.$transaction(async (tx) => {
+      if (!(await this.usersService.lockForUpdate(user.id, tx))) {
+        return null; // deleted meanwhile
+      }
+      // The password may have been reset or the account disabled while
+      // bcrypt was running
+      const current = await this.usersService.findWithPasswordById(user.id, tx);
+      if (current?.password !== verifiedHash || !current.isActive) {
+        return null;
+      }
+      return this.startSession(user, client, tx);
+    });
+    if (!session) {
+      throw this.invalidCredentials();
+    }
+    return session;
   }
 
-  async revokeAllUserRefreshTokens(userId: string) {
-    await this.prisma.refreshToken.updateMany({
-      where: {
-        userId,
-        isRevoked: false,
-      },
-      data: { isRevoked: true },
-    });
+  async verifyEmail(dto: OtpCodeDto): Promise<void> {
+    const user = await this.usersService.findByEmail(dto.email);
+    if (!user || user.isEmailVerified) {
+      throw this.invalidCode();
+    }
 
-    return { message: 'All refresh tokens revoked successfully' };
+    // Return instead of throwing inside the transaction: a rollback would undo
+    // the attempt counter and lift the brute-force limit
+    const verified = await this.prisma.$transaction(async (tx) => {
+      const consumed = await this.otpService.consume(
+        user.id,
+        OtpType.VERIFICATION,
+        dto.otpCode,
+        tx,
+      );
+      if (consumed) {
+        await this.usersService.markEmailVerified(user.id, tx);
+      }
+      return consumed;
+    });
+    if (!verified) {
+      throw this.invalidCode();
+    }
   }
 
-  async cleanupExpiredRefreshTokens() {
-    const deleted = await this.prisma.refreshToken.deleteMany({
-      where: {
-        OR: [
-          {
-            expiresAt: {
-              lt: new Date(),
-            },
-          },
-          {
-            isRevoked: true,
-            createdAt: {
-              lt: new Date(Date.now() - 2592000000), // older than 30 days
-            },
-          },
-        ],
-      },
+  resendVerification(email: string): void {
+    this.runInBackground(async () => {
+      const user = await this.usersService.findByEmail(email);
+      if (!user?.isActive || user.isEmailVerified) {
+        return;
+      }
+      const code = await this.issueCode(user.id, OtpType.VERIFICATION);
+      if (code) {
+        await this.mailService.sendVerificationOtp(
+          email,
+          code,
+          this.otpService.expiryMinutes,
+        );
+      }
     });
+  }
 
-    return { message: `Cleaned up ${deleted.count} expired refresh tokens` };
+  forgotPassword(email: string): void {
+    this.runInBackground(async () => {
+      const user = await this.usersService.findByEmail(email);
+      if (!user?.isActive) {
+        return;
+      }
+      const code = await this.issueCode(user.id, OtpType.PASSWORD_RESET);
+      if (code) {
+        await this.mailService.sendPasswordResetOtp(
+          email,
+          code,
+          this.otpService.expiryMinutes,
+        );
+      }
+    });
+  }
+
+  async resetPassword(dto: ResetPasswordDto): Promise<void> {
+    // Hashed first so unknown emails don't answer noticeably faster
+    const passwordHash = await bcrypt.hash(dto.newPassword, BCRYPT_ROUNDS);
+    const user = await this.usersService.findByEmail(dto.email);
+    // A code issued before the account was disabled must not reopen it
+    if (!user?.isActive) {
+      throw this.invalidCode();
+    }
+
+    const reset = await this.prisma.$transaction(async (tx) => {
+      if (!(await this.usersService.lockForUpdate(user.id, tx))) {
+        return false;
+      }
+      const consumed = await this.otpService.consume(
+        user.id,
+        OtpType.PASSWORD_RESET,
+        dto.otpCode,
+        tx,
+      );
+      if (consumed) {
+        await this.usersService.setPassword(user.id, passwordHash, tx);
+        // Whoever knew the old password is signed out everywhere
+        await this.tokenService.revokeAllForUser(user.id, tx);
+      }
+      return consumed;
+    });
+    if (!reset) {
+      throw this.invalidCode();
+    }
+  }
+
+  // Signs out every other session and returns a fresh pair for this one
+  async changePassword(
+    userId: string,
+    dto: ChangePasswordDto,
+    client: ClientMeta,
+  ): Promise<AuthTokens> {
+    const record = await this.usersService.findWithPasswordById(userId);
+    if (!record) {
+      throw new UnauthorizedException();
+    }
+    if (!(await bcrypt.compare(dto.currentPassword, record.password))) {
+      throw this.currentPasswordIncorrect();
+    }
+    const passwordHash = await bcrypt.hash(dto.newPassword, BCRYPT_ROUNDS);
+
+    return this.prisma.$transaction(async (tx) => {
+      const locked = await this.usersService.lockForUpdate(userId, tx);
+      const current = locked
+        ? await this.usersService.findWithPasswordById(userId, tx)
+        : null;
+      if (!current) {
+        throw new UnauthorizedException(); // deleted meanwhile
+      }
+      // A concurrent reset or change wins; this one must not overwrite it
+      if (current.password !== record.password) {
+        throw this.currentPasswordIncorrect();
+      }
+      await this.usersService.setPassword(userId, passwordHash, tx);
+      await this.tokenService.revokeAllForUser(userId, tx);
+      return this.tokenService.issue(record, client, tx);
+    });
+  }
+
+  sendLoginOtp(email: string): void {
+    this.runInBackground(async () => {
+      const user = await this.usersService.findByEmail(email);
+      if (!user?.isActive) {
+        return;
+      }
+      const code = await this.issueCode(user.id, OtpType.LOGIN);
+      if (code) {
+        await this.mailService.sendOtpEmail(
+          email,
+          code,
+          this.otpService.expiryMinutes,
+        );
+      }
+    });
+  }
+
+  async verifyLoginOtp(
+    dto: OtpCodeDto,
+    client: ClientMeta,
+  ): Promise<AuthSession> {
+    const user = await this.usersService.findByEmail(dto.email);
+    if (!user?.isActive) {
+      throw this.invalidCode();
+    }
+
+    const session = await this.prisma.$transaction(async (tx) => {
+      if (!(await this.usersService.lockForUpdate(user.id, tx))) {
+        return null;
+      }
+      const consumed = await this.otpService.consume(
+        user.id,
+        OtpType.LOGIN,
+        dto.otpCode,
+        tx,
+      );
+      return consumed ? this.startSession(user, client, tx) : null;
+    });
+    if (!session) {
+      throw this.invalidCode();
+    }
+    return session;
+  }
+
+  refresh(refreshToken: string, client: ClientMeta): Promise<AuthTokens> {
+    return this.tokenService.rotate(refreshToken, client);
+  }
+
+  logout(refreshToken: string): Promise<void> {
+    return this.tokenService.revoke(refreshToken);
+  }
+
+  async logoutAll(userId: string): Promise<void> {
+    await this.prisma.$transaction(async (tx) => {
+      await this.usersService.lockForUpdate(userId, tx);
+      await this.tokenService.revokeAllForUser(userId, tx);
+    });
+  }
+
+  private async startSession(
+    user: PublicUser,
+    client: ClientMeta,
+    tx: Prisma.TransactionClient,
+  ): Promise<AuthSession> {
+    const updated = await this.usersService.recordLogin(user.id, tx);
+    const tokens = await this.tokenService.issue(updated, client, tx);
+    return { ...tokens, user: updated };
+  }
+
+  // Null while the account is rate limited for this code type (OtpService)
+  private issueCode(userId: string, type: OtpType): Promise<string | null> {
+    return this.prisma.$transaction(async (tx) =>
+      (await this.usersService.lockForUpdate(userId, tx))
+        ? this.otpService.issue(userId, type, tx)
+        : null,
+    );
+  }
+
+  private assertActive(user: PublicUser): void {
+    if (!user.isActive) {
+      throw new ForbiddenException({
+        errorCode: AuthErrorCode.ACCOUNT_DISABLED,
+        message: 'This account has been disabled',
+      });
+    }
+  }
+
+  // Work that must not delay the response. The code-sending flows run entirely
+  // here, so their response time doesn't depend on whether the account exists
+  // (no user lookup, code issuing or SMTP on the response path). Failures are
+  // logged; users can ask for a new code.
+  private runInBackground(task: () => Promise<void>): void {
+    void task().catch((error: unknown) => {
+      this.logger.error(
+        'Background task failed',
+        error instanceof Error ? error.stack : String(error),
+      );
+    });
+  }
+
+  private emailTaken() {
+    return new ConflictException({
+      errorCode: AuthErrorCode.EMAIL_TAKEN,
+      message: 'An account with this email already exists',
+    });
+  }
+
+  private invalidCredentials() {
+    return new UnauthorizedException({
+      errorCode: AuthErrorCode.INVALID_CREDENTIALS,
+      message: 'Email or password is incorrect',
+    });
+  }
+
+  private currentPasswordIncorrect() {
+    return new UnprocessableEntityException({
+      errorCode: AuthErrorCode.CURRENT_PASSWORD_INCORRECT,
+      message: 'Current password is incorrect',
+    });
+  }
+
+  // 422: a well-formed code that is wrong, expired or used up
+  private invalidCode() {
+    return new UnprocessableEntityException({
+      errorCode: AuthErrorCode.INVALID_CODE,
+      message: 'Invalid or expired code',
+    });
   }
 }

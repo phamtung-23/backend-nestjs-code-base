@@ -81,35 +81,33 @@ future e2e tests.
 | Response envelope (`ResponseInterceptor`, `ResponseHelper`) | ✅ (detects envelopes heuristically) | api-design |
 | URI versioning, `/health` (version-neutral, DB ping) | ✅ | api-design |
 | Global rate limit (`ThrottlerGuard`, in-memory storage) | ✅ (Redis storage ❌) | security |
-| Refresh-token rotation, separate secrets, `jti` | ✅ (tokens stored in plain text ❌) | security |
+| Refresh tokens: separate secret, `jti`, SHA-256 hash at rest, atomic rotation, revoked on password change/reset | ✅ | security |
 | OTP attempt limit via conditional update | ✅ | security |
 | Error format with `errorCode` / `details` / `requestId`, Prisma error mapping, 5xx logging (`GlobalExceptionFilter`, `validationExceptionFactory`) | ✅ | errors |
 | List query helpers: `ListQueryDto`, `ProjectionQueryDto`, `parseSort` / `buildSelect` / `buildSearch` / `pageMeta` (`src/common/query`), DTO transform helpers | ✅ offset pagination (no module uses them yet); cursor helpers ❌ | api-design |
 | Swagger decorators for the envelope: `ApiEnvelopeResponse`, `ApiErrorResponse` | ✅ | api-design |
-| Secure-by-default auth: global `JwtAuthGuard` + `@Public()`, `@CurrentUser()` | ❌ | security |
-| RBAC: `@Roles()` + `RolesGuard`; `isActive` check | ❌ | security |
+| Secure-by-default auth: global `JwtAuthGuard` + `@Public()`, `@CurrentUser()`, `@ClientMetaParam()` | ✅ | security |
+| RBAC: `@Roles()` + `RolesGuard`; `isActive` enforced on every request | ✅ | security |
 | CORS from `ALLOWED_ORIGINS`, helmet, `SWAGGER_ENABLED` flag (`src/app.setup.ts`) | ✅ | security |
 | Startup env validation (`src/config/env.validation.ts`) | ✅ | architecture |
 | Typed config namespaces (`registerAs`) | ❌ (code reads `ConfigService.get('KEY')`) | architecture |
 | Request ID (`X-Request-Id`, `RequestContext`) + log correlation (`AppLogger`) | ✅ | cross-cutting |
 | Audit log (`AuditLog` model + `AuditService`) | ❌ | cross-cutting |
 | Idempotency (`@Idempotent()` + `IdempotencyInterceptor`) | ❌ | cross-cutting |
-| Repository layer | ❌ (auth calls Prisma directly) | architecture |
+| Repository layer (`users`, auth `otp` / `refresh-token` repositories) | ✅ | architecture |
+| Scheduled housekeeping (`@nestjs/schedule`, `AuthCleanupTask`, batched deletes) | ✅ | database |
 | e2e test setup (`backend/test`) | ❌ | testing |
 
 ## Known deviations (legacy — fix when touching, never copy)
 
-- `modules/auth`: token fields are snake_case (`access_token`), the service returns `{ message }` objects,
-  POST actions return 201, a duplicate on register returns 401 (should be 409), 404s on public endpoints leak
-  whether an account exists, per-parameter `new ValidationPipe()` duplicates the global pipe, and
-  `AuthService` mixes tokens, OTP, passwords and user lookup (split it per SRP).
-- Password DTOs use `MinLength(6)` without `MaxLength` (standard: 8–72 characters).
-- `register`, `verifyEmail` and `resetPassword` do several writes without a transaction; password
-  change/reset doesn't revoke refresh tokens.
-- `refresh_tokens.token` has both `@unique` and a redundant `@@index`.
-- `GET /v1` returns "Hello World!" (starter leftover).
-- `MailService` logs recipient email addresses in full; it depends on nodemailer directly instead of a port.
-- `OTP_EXPIRY_MINUTES`, `OTP_CODE_LENGTH` and `OTP_RATE_LIMIT_MINUTES` are passed by compose and `.env.sample` but
-  never read; OTP expiry is hardcoded to 10 minutes in `AuthService`.
+- `MailService` logs recipient email addresses in full, keeps HTML templates inline, and depends on nodemailer
+  directly instead of a port.
 - `ResponseInterceptor` treats any object with `status` and `message` keys as an envelope; return data through
   `ResponseHelper` or DTOs that don't have both keys.
+- Email verification isn't required to log in; enforce it in `AuthService.login` if a project needs it (see "Known
+  gaps" in `backend/documents/AUTHENTICATION.md`).
+- `refresh_tokens.token` (plaintext, nullable, unused) is the pending contract step of the expand/contract migration
+  `20260925000000_hash_refresh_tokens`: once no deployment can roll back past it, add a migration that drops `token`
+  and makes `tokenHash` required.
+- Accounts whose emails differed only by case before `20260924000100_lowercase_user_emails` are left untouched and
+  can't log in until merged by hand (query in the migration file).

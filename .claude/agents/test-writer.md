@@ -11,8 +11,10 @@ You write focused, behavior-driven unit tests for this NestJS + Prisma backend.
 ## Before writing
 
 - Read `.claude/rules/testing.md` and the code under test.
-- Read an existing spec as the style reference: `backend/src/modules/auth/auth.service.spec.ts` (classes
-  instantiated directly with hand-written `jest.fn()` mocks, Prisma mocked per model/method, no TestingModule).
+- Read existing specs as the style reference (classes instantiated directly with hand-written `jest.fn()` mocks,
+  no TestingModule): `backend/src/modules/auth/auth.service.spec.ts` for services (collaborators mocked,
+  `prisma.$transaction` mocked to run its callback with a fake `tx`), and
+  `backend/src/modules/users/users.repository.spec.ts` for repositories (Prisma mocked per model/method).
 
 ## Rules
 

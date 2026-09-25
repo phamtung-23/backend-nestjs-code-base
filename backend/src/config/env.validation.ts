@@ -21,6 +21,22 @@ export enum NodeEnv {
 }
 
 const MIN_PRODUCTION_SECRET_LENGTH = 32;
+// jsonwebtoken timespans: a number followed by s, m, h or d
+const DURATION_PATTERN = /^[1-9]\d*[smhd]$/;
+const DURATION_UNIT_SECONDS: Record<string, number> = {
+  s: 1,
+  m: 60,
+  h: 3600,
+  d: 86400,
+};
+// Upper bounds: a revoked session keeps its access token until it expires
+const MAX_TOKEN_LIFETIME = {
+  JWT_ACCESS_EXPIRES_IN: '24h',
+  JWT_REFRESH_EXPIRES_IN: '90d',
+} as const;
+
+const durationSeconds = (value: string): number =>
+  Number(value.slice(0, -1)) * DURATION_UNIT_SECONDS[value.slice(-1)];
 // Phrases used by the placeholders in .env.sample / backend/.env.example
 const PLACEHOLDER_SECRET =
   /your-|change-?in-?production|change-?me|key-?here|placeholder/i;
@@ -71,9 +87,13 @@ export class EnvironmentVariables {
   @IsNotEmpty()
   JWT_REFRESH_SECRET: string;
 
-  @IsOptional()
-  @IsString()
-  JWT_EXPIRES_IN?: string;
+  /** Access token lifetime, e.g. 15m, 1h */
+  @Matches(DURATION_PATTERN)
+  JWT_ACCESS_EXPIRES_IN: string = '15m';
+
+  /** Refresh token lifetime, e.g. 7d */
+  @Matches(DURATION_PATTERN)
+  JWT_REFRESH_EXPIRES_IN: string = '7d';
 
   @IsString()
   REDIS_HOST: string = 'localhost';
@@ -93,6 +113,12 @@ export class EnvironmentVariables {
   @Min(1)
   @Max(20)
   OTP_MAX_ATTEMPTS: number = 5;
+
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  @Max(60)
+  OTP_EXPIRY_MINUTES: number = 10;
 
   @IsOptional()
   @IsString()
@@ -165,6 +191,16 @@ export function validateEnv(
     problems.push(
       `ALLOWED_ORIGINS must list exact http(s) origins without paths or wildcards (invalid: ${invalidOrigins.join(', ')})`,
     );
+  }
+
+  for (const [key, max] of Object.entries(MAX_TOKEN_LIFETIME)) {
+    const value = env[key as keyof typeof MAX_TOKEN_LIFETIME];
+    if (
+      DURATION_PATTERN.test(value) &&
+      durationSeconds(value) > durationSeconds(max)
+    ) {
+      problems.push(`${key} must be at most ${max}`);
+    }
   }
 
   if (env.NODE_ENV === NodeEnv.Production) {

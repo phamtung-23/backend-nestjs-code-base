@@ -1,151 +1,118 @@
+import { applyDecorators } from '@nestjs/common';
+import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
+import { Transform } from 'class-transformer';
 import {
   IsEmail,
-  IsString,
-  MinLength,
+  IsNotEmpty,
   IsOptional,
-  Length,
+  IsString,
   Matches,
+  MaxLength,
+  MinLength,
 } from 'class-validator';
-import { ApiProperty } from '@nestjs/swagger';
+import {
+  normalizeEmail,
+  trimString,
+} from '../../../common/helpers/transform.helpers';
+import {
+  PASSWORD_MAX_LENGTH,
+  PASSWORD_MIN_LENGTH,
+  PASSWORD_PATTERN,
+  OTP_LENGTH,
+  OTP_PATTERN,
+} from '../auth.constants';
 
-export class LoginDto {
-  @ApiProperty({ example: 'user@example.com' })
+// Policy for passwords a user chooses (register, reset, change)
+function IsStrongPassword(example: string) {
+  return applyDecorators(
+    ApiProperty({
+      example,
+      minLength: PASSWORD_MIN_LENGTH,
+      maxLength: PASSWORD_MAX_LENGTH,
+      description:
+        'At least one lowercase letter, one uppercase letter and one digit',
+    }),
+    IsString(),
+    MinLength(PASSWORD_MIN_LENGTH),
+    MaxLength(PASSWORD_MAX_LENGTH),
+    Matches(PASSWORD_PATTERN, {
+      message:
+        'password must contain at least one lowercase letter, one uppercase letter and one digit',
+    }),
+  );
+}
+
+export class EmailDto {
+  @ApiProperty({ example: 'jane@example.com', maxLength: 254 })
+  @Transform(normalizeEmail)
   @IsEmail()
+  @MaxLength(254)
   email: string;
+}
 
-  @ApiProperty({ example: 'password123' })
+export class LoginDto extends EmailDto {
+  // No strength rules here: accounts created under older rules must still log in
+  @ApiProperty({ example: 'Passw0rd!', maxLength: PASSWORD_MAX_LENGTH })
   @IsString()
-  @MinLength(6)
+  @IsNotEmpty()
+  @MaxLength(PASSWORD_MAX_LENGTH)
   password: string;
 }
 
-export class RegisterDto {
-  @ApiProperty({ example: 'user@example.com' })
-  @IsEmail()
-  email: string;
-
-  @ApiProperty({ example: 'password123' })
-  @IsString()
-  @MinLength(6)
-  @Matches(/^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)[a-zA-Z\d@$!%*?&]{6,}$/, {
-    message:
-      'Password must contain at least one uppercase letter, one lowercase letter, and one number',
-  })
+export class RegisterDto extends EmailDto {
+  @IsStrongPassword('Passw0rd!')
   password: string;
 
-  @ApiProperty({ example: 'John', required: false })
+  @ApiPropertyOptional({ example: 'Jane', maxLength: 100 })
   @IsOptional()
+  @Transform(trimString)
   @IsString()
+  @MaxLength(100)
   firstName?: string;
 
-  @ApiProperty({ example: 'Doe', required: false })
+  @ApiPropertyOptional({ example: 'Doe', maxLength: 100 })
   @IsOptional()
+  @Transform(trimString)
   @IsString()
+  @MaxLength(100)
   lastName?: string;
 }
 
-export class ForgotPasswordDto {
-  @ApiProperty({ example: 'user@example.com' })
-  @IsEmail()
-  email: string;
+export class OtpCodeDto extends EmailDto {
+  @ApiProperty({ example: '123456', pattern: OTP_PATTERN.source })
+  @IsString()
+  @Matches(OTP_PATTERN, { message: `otpCode must be ${OTP_LENGTH} digits` })
+  otpCode: string;
 }
 
-export class ResetPasswordDto {
-  @ApiProperty({ example: 'user@example.com' })
-  @IsEmail()
-  email: string;
-
-  @ApiProperty({ example: '123456' })
-  @IsString()
-  @Length(6, 6)
-  otpCode: string;
-
-  @ApiProperty({ example: 'NewPassword@123' })
-  @IsString()
-  @MinLength(6)
-  @Matches(/^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)[a-zA-Z\d@$!%*?&]{6,}$/, {
-    message:
-      'Password must contain at least one uppercase letter, one lowercase letter, and one number',
-  })
+export class ResetPasswordDto extends OtpCodeDto {
+  @IsStrongPassword('NewPassw0rd!')
   newPassword: string;
-}
-
-export class VerifyEmailDto {
-  @ApiProperty({ example: 'user@example.com' })
-  @IsEmail()
-  email: string;
-
-  @ApiProperty({ example: '123456' })
-  @IsString()
-  @Length(6, 6)
-  otpCode: string;
-}
-
-export class SendOtpDto {
-  @ApiProperty({ example: 'user@example.com' })
-  @IsEmail()
-  email: string;
-}
-
-export class VerifyOtpDto {
-  @ApiProperty({ example: 'user@example.com' })
-  @IsEmail()
-  email: string;
-
-  @ApiProperty({ example: '123456' })
-  @IsString()
-  @Length(6, 6)
-  otpCode: string;
 }
 
 export class ChangePasswordDto {
-  @ApiProperty({ example: 'currentPassword123' })
+  @ApiProperty({ example: 'Passw0rd!', maxLength: PASSWORD_MAX_LENGTH })
   @IsString()
+  @IsNotEmpty()
+  @MaxLength(PASSWORD_MAX_LENGTH)
   currentPassword: string;
 
-  @ApiProperty({ example: 'newPassword123' })
-  @IsString()
-  @MinLength(6)
-  @Matches(/^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)[a-zA-Z\d@$!%*?&]{6,}$/, {
-    message:
-      'Password must contain at least one uppercase letter, one lowercase letter, and one number',
-  })
+  @IsStrongPassword('NewPassw0rd!')
   newPassword: string;
 }
 
-export class AuthResponseDto {
-  @ApiProperty()
-  access_token: string;
-
-  @ApiProperty()
-  refresh_token: string;
-
-  @ApiProperty()
-  user: {
-    id: string;
-    email: string;
-    firstName?: string;
-    lastName?: string;
-    role: string;
-    isEmailVerified: boolean;
-  };
-}
-
 export class RefreshTokenDto {
-  @ApiProperty({ example: 'your-refresh-token-here' })
+  @ApiProperty({ example: 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...' })
   @IsString()
-  refresh_token: string;
+  @IsNotEmpty()
+  @MaxLength(2000)
+  refreshToken: string;
 }
 
-export class RefreshTokenResponseDto {
-  @ApiProperty()
-  access_token: string;
-
-  @ApiProperty()
-  refresh_token: string;
-}
-
-export class MessageResponseDto {
-  @ApiProperty()
-  message: string;
-}
+// One DTO per operation, so each can evolve on its own
+export class ResendVerificationDto extends EmailDto {}
+export class ForgotPasswordDto extends EmailDto {}
+export class SendOtpDto extends EmailDto {}
+export class VerifyEmailDto extends OtpCodeDto {}
+export class VerifyOtpDto extends OtpCodeDto {}
+export class LogoutDto extends RefreshTokenDto {}

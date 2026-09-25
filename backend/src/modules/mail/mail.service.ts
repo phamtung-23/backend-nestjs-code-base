@@ -19,7 +19,11 @@ export class MailService {
     });
   }
 
-  async sendVerificationOtp(email: string, otpCode: string): Promise<void> {
+  async sendVerificationOtp(
+    email: string,
+    otpCode: string,
+    expiresInMinutes: number,
+  ): Promise<void> {
     const mailOptions = {
       from: this.configService.get<string>('SMTP_FROM', 'noreply@yourapp.com'),
       to: email,
@@ -33,7 +37,7 @@ export class MailService {
               <span style="font-size: 32px; font-weight: bold; color: #28a745; letter-spacing: 10px;">${otpCode}</span>
             </div>
           </div>
-          <p style="color: #666; font-size: 14px;">This code will expire in 10 minutes.</p>
+          <p style="color: #666; font-size: 14px;">This code will expire in ${expiresInMinutes} minutes.</p>
           <p style="color: #666; font-size: 14px;">If you didn't create an account, please ignore this email.</p>
         </div>
       `,
@@ -48,7 +52,11 @@ export class MailService {
     }
   }
 
-  async sendPasswordResetOtp(email: string, otpCode: string): Promise<void> {
+  async sendPasswordResetOtp(
+    email: string,
+    otpCode: string,
+    expiresInMinutes: number,
+  ): Promise<void> {
     const mailOptions = {
       from: this.configService.get('SMTP_FROM', 'noreply@yourapp.com'),
       to: email,
@@ -62,7 +70,7 @@ export class MailService {
               <span style="font-size: 32px; font-weight: bold; color: #dc3545; letter-spacing: 10px;">${otpCode}</span>
             </div>
           </div>
-          <p style="color: #666; font-size: 14px;">This code will expire in 10 minutes.</p>
+          <p style="color: #666; font-size: 14px;">This code will expire in ${expiresInMinutes} minutes.</p>
           <p style="color: #666; font-size: 14px;">If you didn't request a password reset, please ignore this email.</p>
         </div>
       `,
@@ -77,7 +85,11 @@ export class MailService {
     }
   }
 
-  async sendOtpEmail(email: string, otpCode: string): Promise<void> {
+  async sendOtpEmail(
+    email: string,
+    otpCode: string,
+    expiresInMinutes: number,
+  ): Promise<void> {
     const mailOptions = {
       from: this.configService.get('SMTP_FROM', 'noreply@football-app.com'),
       to: email,
@@ -91,7 +103,7 @@ export class MailService {
               <span style="font-size: 32px; font-weight: bold; color: #007bff; letter-spacing: 10px;">${otpCode}</span>
             </div>
           </div>
-          <p style="color: #666; font-size: 14px;">This code will expire in 10 minutes.</p>
+          <p style="color: #666; font-size: 14px;">This code will expire in ${expiresInMinutes} minutes.</p>
           <p style="color: #666; font-size: 14px;">If you didn't request this code, please ignore this email.</p>
         </div>
       `,

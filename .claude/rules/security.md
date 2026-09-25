@@ -11,26 +11,35 @@ paths:
 
 ## Authentication
 
-- Access token: JWT Bearer signed with `JWT_SECRET`. Refresh token: signed with `JWT_REFRESH_SECRET`, carries
-  `type: 'refresh'` and a random `jti`, stored in `refresh_tokens`, rotated on every refresh. `JwtStrategy`
-  rejects refresh tokens. Keep all of that intact.
-- Target (CLAUDE.md "Foundations status"): secure by default — `JwtAuthGuard` registered as `APP_GUARD`, open
-  endpoints opt out with `@Public()`. Until that exists, every non-public route needs
-  `@UseGuards(JwtAuthGuard)` + `@ApiBearerAuth('JWT-auth')`.
-- Read the current user with a `@CurrentUser()` param decorator, not `@Request() req`.
-- Token lifetimes come from config (target: access 15 min, refresh 7 days); don't hardcode new ones.
-- Every authenticated request checks that the user exists and `isActive`. Password change/reset revokes all of the
-  user's refresh tokens.
+- Model documented in `backend/documents/AUTHENTICATION.md`. Access token: JWT Bearer signed with `JWT_SECRET`.
+  Refresh token: signed with `JWT_REFRESH_SECRET`, carries `type: 'refresh'` and a random `jti`, stored only as a
+  SHA-256 hash, rotated atomically on every refresh (`TokenService`). `JwtStrategy` rejects refresh tokens. Keep all
+  of that intact.
+- Secure by default: `JwtAuthGuard` is a global `APP_GUARD`; open endpoints opt out with `@Public()` (from
+  `modules/auth/decorators`). Protected endpoints add `@ApiBearerAuth('JWT-auth')` for Swagger. Never add
+  `@UseGuards(JwtAuthGuard)` — it's already global.
+- Read the current user with `@CurrentUser()` and client info (user agent, IP) with `@ClientMetaParam()`, never
+  `@Request() req` / `@Req()`.
+- Token lifetimes come from `JWT_ACCESS_EXPIRES_IN` / `JWT_REFRESH_EXPIRES_IN`; don't hardcode new ones.
+- `JwtStrategy` re-reads the user on every request and rejects missing or inactive accounts. Password change/reset
+  revokes all of the user's refresh tokens (`TokenService.revokeAllForUser`), in the same transaction as the
+  password write.
 - Passwords: bcryptjs async API with cost ≥ 10. Select the `password` column only in credential-check queries;
   never log or return it.
-- OTP: `crypto.randomInt`, short TTL, single use, scoped by type, attempt limit via a conditional update
-  (reference: `AuthService.consumeOtp`).
-- Public endpoints never reveal whether an account exists (follow the `forgotPassword` pattern: same response
-  either way).
+- OTP: `OtpService` — `crypto.randomInt`, `OTP_EXPIRY_MINUTES`, single use, scoped by type, attempt limit via
+  conditional updates. When a code is checked inside a transaction, return `false` from the callback instead of
+  throwing: a rollback would undo the attempt counter.
+- Public endpoints never reveal whether an account exists: same response either way, `AUTH_INVALID_CODE` for
+  unknown emails, dummy bcrypt compare for unknown logins, and code-sending flows that do all their work (lookup,
+  issuing, SMTP) after the response (`AuthService.runInBackground`), so timing reveals nothing. Deliberate
+  exception: register answers 409 `AUTH_EMAIL_TAKEN`.
+- Anything that sends a code is also limited per account (`OtpService.issue`: cooldown + hourly cap), not only per IP.
+- Transactions that issue or revoke a user's sessions or codes start with `usersService.lockForUpdate(userId, tx)`;
+  flows that verified a password outside the transaction re-check the hash under that lock.
 
 ## Authorization
 
-- RBAC: `@Roles(UserRole.ADMIN)` + `RolesGuard` (build it if missing). New admin endpoints default to ADMIN only.
+- RBAC: `@Roles(UserRole.ADMIN)` (global `RolesGuard`, 403 `FORBIDDEN`). New admin endpoints default to ADMIN only.
 - Ownership: services scope queries to the caller (`where: { id, ownerId: user.id }`) and return 404 when there's
   no match. Never derive ownership from IDs in the request body.
 - Clients can never set roles or other privileged fields.
@@ -61,7 +70,6 @@ paths:
 - Never log tokens, passwords, OTP codes, `Authorization` headers or full card numbers; mask emails in logs where
   practical.
 - Response DTOs whitelist fields; secret columns never leave the repository except for the specific auth check.
-- Refresh tokens should be stored hashed (SHA-256) — CLAUDE.md "Foundations status".
 - Raw SQL only through tagged `$queryRaw\`...\``; `$queryRawUnsafe` / `$executeRawUnsafe` with user input are
   forbidden.
 - Uploads: size limit, MIME whitelist, generated file names (never trust the client's filename).

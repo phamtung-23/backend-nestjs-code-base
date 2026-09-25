@@ -20,6 +20,9 @@ describe('validateEnv', () => {
       REDIS_HOST: 'localhost',
       REDIS_PORT: 6379,
       OTP_MAX_ATTEMPTS: 5,
+      OTP_EXPIRY_MINUTES: 10,
+      JWT_ACCESS_EXPIRES_IN: '15m',
+      JWT_REFRESH_EXPIRES_IN: '7d',
       SMTP_PORT: 587,
     });
   });
@@ -50,7 +53,12 @@ describe('validateEnv', () => {
     ['PORT', 'abc'],
     ['PORT', '70000'],
     ['REDIS_PORT', '0'],
+    ['SMTP_PORT', '70000'],
     ['OTP_MAX_ATTEMPTS', '50'],
+    ['OTP_EXPIRY_MINUTES', '0'],
+    ['OTP_EXPIRY_MINUTES', '61'],
+    ['JWT_ACCESS_EXPIRES_IN', '15 minutes'],
+    ['JWT_REFRESH_EXPIRES_IN', '1w'],
     ['API_VERSION', 'v1'],
     ['NODE_ENV', 'staging'],
     ['SWAGGER_ENABLED', 'yes'],
@@ -90,6 +98,67 @@ describe('validateEnv', () => {
     expect(() => validateEnv({ ...base, ALLOWED_ORIGINS: origin })).toThrow(
       'ALLOWED_ORIGINS',
     );
+  });
+
+  describe('token lifetimes', () => {
+    it.each(['24h', '1440m', '86400s', '1d', '15m'])(
+      'accepts an access token lifetime of %s',
+      (value) => {
+        expect(
+          validateEnv({ ...base, JWT_ACCESS_EXPIRES_IN: value })
+            .JWT_ACCESS_EXPIRES_IN,
+        ).toBe(value);
+      },
+    );
+
+    it.each(['0s', '0m', '015m'])(
+      'rejects the zero or zero-padded lifetime %s',
+      (value) => {
+        expect(() =>
+          validateEnv({ ...base, JWT_ACCESS_EXPIRES_IN: value }),
+        ).toThrow('JWT_ACCESS_EXPIRES_IN');
+      },
+    );
+
+    it.each(['2d', '25h', '1441m', '86401s'])(
+      'rejects an access token lifetime of %s (over 24h)',
+      (value) => {
+        expect(() =>
+          validateEnv({ ...base, JWT_ACCESS_EXPIRES_IN: value }),
+        ).toThrow('JWT_ACCESS_EXPIRES_IN must be at most 24h');
+      },
+    );
+
+    it.each(['90d', '2160h', '7d'])(
+      'accepts a refresh token lifetime of %s',
+      (value) => {
+        expect(
+          validateEnv({ ...base, JWT_REFRESH_EXPIRES_IN: value })
+            .JWT_REFRESH_EXPIRES_IN,
+        ).toBe(value);
+      },
+    );
+
+    it.each(['91d', '2161h'])(
+      'rejects a refresh token lifetime of %s (over 90 days)',
+      (value) => {
+        expect(() =>
+          validateEnv({ ...base, JWT_REFRESH_EXPIRES_IN: value }),
+        ).toThrow('JWT_REFRESH_EXPIRES_IN must be at most 90d');
+      },
+    );
+
+    it('reports a malformed lifetime as a format error only', () => {
+      let message = '';
+      try {
+        validateEnv({ ...base, JWT_ACCESS_EXPIRES_IN: '2 days' });
+      } catch (error) {
+        message = (error as Error).message;
+      }
+
+      expect(message).toContain('JWT_ACCESS_EXPIRES_IN');
+      expect(message).not.toContain('must be at most');
+    });
   });
 
   describe('in production', () => {
