@@ -8,15 +8,15 @@ the model behind them.
 | Method & path | Auth | Success | Notes |
 | --- | --- | --- | --- |
 | `POST register` | public | 201 user | 409 `AUTH_EMAIL_TAKEN`; emails a verification code |
-| `POST login` | public | 200 session | 401 `AUTH_INVALID_CREDENTIALS`, 403 `AUTH_ACCOUNT_DISABLED` |
-| `POST verify-email` | public | 200 | 422 `AUTH_INVALID_CODE` |
+| `POST login` | public | 200 session | 401 `AUTH_INVALID_CREDENTIALS`; 403 `AUTH_EMAIL_NOT_VERIFIED`, `AUTH_ACCOUNT_DISABLED` |
+| `POST verify-email` | public | 200 | needs the password too: 401 `AUTH_INVALID_CREDENTIALS`, 422 `AUTH_INVALID_CODE` |
 | `POST resend-verification` | public | 200 | same answer whether or not the account exists |
 | `POST forgot-password` | public | 200 | same answer whether or not the account exists |
 | `POST reset-password` | public | 200 | 422 `AUTH_INVALID_CODE`; signs the account out everywhere |
 | `POST send-otp` | public | 200 | emails a one-time login code; same answer for unknown emails |
-| `POST verify-otp` | public | 200 session | 422 `AUTH_INVALID_CODE`; logs in with the code |
+| `POST verify-otp` | public | 200 session | 422 `AUTH_INVALID_CODE`; logs in with the code (works before verification) |
 | `POST refresh-token` | public | 200 tokens | 401 `AUTH_INVALID_REFRESH_TOKEN` |
-| `POST logout` | public | 200 | revokes the given refresh token; idempotent |
+| `POST logout` | public | 200 | ends the session the refresh token belongs to; idempotent |
 | `GET profile` | bearer | 200 user | |
 | `POST change-password` | bearer | 200 tokens | 422 `AUTH_CURRENT_PASSWORD_INCORRECT`; other sessions end |
 | `POST logout-all` | bearer | 200 | revokes every refresh token of the user |
@@ -42,8 +42,13 @@ is wrapped in the standard envelope (`src/common/README.md`). Every route with a
 | Stored | no | SHA-256 hash in `refresh_tokens`, with user agent and IP |
 | Accepted by | `JwtAuthGuard` | `POST refresh-token` / `logout` only |
 
+- **Sessions (families):** each login starts a token family; rotation keeps the family. Logout revokes the whole
+  family, i.e. the session on that device.
 - **Rotation:** every refresh revokes the presented token and returns a new pair. A token can be used once. If two
   requests race with the same token, one wins and the other gets 401.
+- **Reuse detection:** presenting an already-rotated token more than 30 seconds after its rotation means it was
+  copied. The whole family is revoked, so whoever holds its newest token is signed out as well, and a warning is
+  logged. Within 30 seconds it's treated as two tabs refreshing at once and just gets 401.
 - **Revocation:** logout revokes one token. Logout-all, a password change and a password reset revoke all of them. A
   password change returns a new pair so the current session continues.
 - **Concurrency:** every transaction that issues or revokes a user's sessions or codes first locks the user row
@@ -74,13 +79,22 @@ is wrapped in the standard envelope (`src/common/README.md`). Every route with a
   limited.
 - Email delivery failures are logged, not returned. Users can request a new code.
 
-## Known gaps
+## Email verification
 
-- Email verification isn't required to log in with a password. Someone who registers another person's email first
-  keeps their password even after the owner logs in by code. Require `isEmailVerified` in `AuthService.login` if a
-  project needs that guarantee.
-- OTP codes are stored in plain text for their short lifetime (an HMAC with a server secret would fix it).
-- Reusing an already-rotated refresh token is rejected but doesn't revoke the rest of that session's tokens.
+- Password login requires a verified email (403 `AUTH_EMAIL_NOT_VERIFIED`, checked only after the password matched).
+- `verify-email` needs the code **and the account password**: only the person who registered can verify. Wrong
+  passwords and unknown emails get the same 401 as login, and don't use up the code's attempts.
+- A successful password reset also verifies the email: the code reached that mailbox.
+- Login by code (`send-otp` / `verify-otp`) works before verification but doesn't verify the email.
+- Together this stops someone from registering another person's email first. They can't verify it (the code goes
+  to the owner), and the owner can't accidentally verify it for them (they don't know the password), so the
+  squatter's password never works. The owner takes the account over with a password reset.
+
+## Known gaps (accepted)
+
+- OTP codes are stored in plain text for their short lifetime (an HMAC with a server secret would change that).
+- Sessions are sliding: each refresh extends the family by `JWT_REFRESH_EXPIRES_IN`; there's no absolute cap.
+- Access tokens stay valid until they expire (default 15 minutes) after a logout or password reset.
 
 ## Client integration
 

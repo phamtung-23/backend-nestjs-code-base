@@ -63,7 +63,11 @@ export class AuthController {
   @ApiEnvelopeResponse(AuthSessionResponseDto)
   @ApiErrorResponse(400, 'VALIDATION_FAILED')
   @ApiErrorResponse(401, AuthErrorCode.INVALID_CREDENTIALS)
-  @ApiErrorResponse(403, AuthErrorCode.ACCOUNT_DISABLED)
+  @ApiErrorResponse(
+    403,
+    AuthErrorCode.EMAIL_NOT_VERIFIED,
+    AuthErrorCode.ACCOUNT_DISABLED,
+  )
   @Public()
   @RateLimit(5, ONE_MINUTE)
   @HttpCode(HttpStatus.OK)
@@ -76,9 +80,15 @@ export class AuthController {
     );
   }
 
-  @ApiOperation({ summary: 'Verify the email address with the emailed code' })
+  @ApiOperation({
+    summary: 'Verify the email address with the emailed code',
+    description:
+      'Requires the account password too, so only the person who registered can verify it.',
+  })
   @ApiEnvelopeResponse(null)
   @ApiErrorResponse(400, 'VALIDATION_FAILED')
+  @ApiErrorResponse(401, AuthErrorCode.INVALID_CREDENTIALS)
+  @ApiErrorResponse(403, AuthErrorCode.ACCOUNT_DISABLED)
   @ApiErrorResponse(422, AuthErrorCode.INVALID_CODE)
   @Public()
   @RateLimit(5, ONE_MINUTE)

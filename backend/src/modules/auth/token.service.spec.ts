@@ -1,4 +1,4 @@
-import { HttpException, UnauthorizedException } from '@nestjs/common';
+import { HttpException, Logger, UnauthorizedException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { JwtService } from '@nestjs/jwt';
 import { Prisma, RefreshToken, UserRole } from '@prisma/client';
@@ -7,7 +7,7 @@ import { ClientMeta } from '../../common/interfaces/client-meta.interface';
 import { PrismaService } from '../../prisma/prisma.service';
 import { PublicUser } from '../users/interfaces/user.interface';
 import { UsersService } from '../users/users.service';
-import { AuthErrorCode } from './auth.constants';
+import { AuthErrorCode, REFRESH_REUSE_GRACE_MS } from './auth.constants';
 import { RefreshTokenRepository } from './refresh-token.repository';
 import { TokenService } from './token.service';
 
@@ -20,6 +20,8 @@ const UUID_PATTERN =
 
 const sha256 = (value: string) =>
   createHash('sha256').update(value).digest('hex');
+
+const ago = (ms: number) => new Date(NOW.getTime() - ms);
 
 const buildUser = (overrides: Partial<PublicUser> = {}): PublicUser => ({
   id: 'user-1',
@@ -43,18 +45,25 @@ const buildStoredToken = (
   tokenHash: sha256('old-refresh-token'),
   // Deprecated plaintext column, kept only for rollback; always null here
   token: null,
+  familyId: 'family-1',
   userId: 'user-1',
   expiresAt: new Date(NOW.getTime() + DAY_MS),
   isRevoked: false,
+  revokedAt: null,
   userAgent: null,
   ipAddress: null,
   createdAt: NOW,
   ...overrides,
 });
 
+const CONFIG: Record<string, string | undefined> = {
+  JWT_REFRESH_SECRET: 'refresh-secret',
+  JWT_ACCESS_EXPIRES_IN: '30m',
+  JWT_REFRESH_EXPIRES_IN: '14d',
+};
+
 const buildConfig = (values: Record<string, string | undefined>) =>
   ({
-    get: jest.fn((key: string) => values[key]),
     getOrThrow: jest.fn((key: string) => {
       const value = values[key];
       if (value === undefined) {
@@ -79,12 +88,6 @@ async function expectHttpError(
   expect((error as HttpException).getResponse()).toMatchObject({ errorCode });
 }
 
-const CONFIG: Record<string, string | undefined> = {
-  JWT_REFRESH_SECRET: 'refresh-secret',
-  JWT_ACCESS_EXPIRES_IN: '30m',
-  JWT_REFRESH_EXPIRES_IN: '14d',
-};
-
 describe('TokenService', () => {
   const tx = { tx: true } as unknown as Prisma.TransactionClient;
   const client: ClientMeta = { userAgent: 'jest', ipAddress: '203.0.113.7' };
@@ -94,6 +97,7 @@ describe('TokenService', () => {
   let repository: jest.Mocked<RefreshTokenRepository>;
   let usersService: jest.Mocked<UsersService>;
   let config: ConfigService;
+  let loggerWarn: jest.SpyInstance;
   let service: TokenService;
 
   const createService = () =>
@@ -109,6 +113,21 @@ describe('TokenService', () => {
     jwtService.sign.mock.calls.find(
       ([payload]) => (payload as { type?: string }).type === 'refresh',
     );
+
+  const storedFamilyIds = () =>
+    repository.create.mock.calls.map(([data]) => data.familyId);
+
+  // The user row lock must be taken before each of the given calls
+  const expectLockedBefore = (
+    ...calls: jest.MockInstance<unknown, any[]>[]
+  ) => {
+    expect(usersService.lockForUpdate).toHaveBeenCalledWith('user-1', tx);
+    const lockedAt = usersService.lockForUpdate.mock.invocationCallOrder[0];
+    for (const call of calls) {
+      expect(call).toHaveBeenCalled();
+      expect(lockedAt).toBeLessThan(call.mock.invocationCallOrder[0]);
+    }
+  };
 
   beforeEach(() => {
     jest.useFakeTimers({ now: NOW });
@@ -132,7 +151,7 @@ describe('TokenService', () => {
       create: jest.fn().mockResolvedValue({}),
       findByHash: jest.fn(),
       revokeIfActive: jest.fn(),
-      revokeByHash: jest.fn().mockResolvedValue(undefined),
+      revokeFamily: jest.fn().mockResolvedValue(0),
       revokeAllForUser: jest.fn(),
       deleteStale: jest.fn(),
     } as unknown as jest.Mocked<RefreshTokenRepository>;
@@ -142,12 +161,19 @@ describe('TokenService', () => {
       findById: jest.fn(),
     } as unknown as jest.Mocked<UsersService>;
 
+    loggerWarn = jest
+      .spyOn(Logger.prototype, 'warn')
+      .mockImplementation(() => undefined);
+
     config = buildConfig(CONFIG);
 
     service = createService();
   });
 
-  afterEach(() => jest.useRealTimers());
+  afterEach(() => {
+    loggerWarn.mockRestore();
+    jest.useRealTimers();
+  });
 
   describe('configuration', () => {
     it.each(Object.keys(CONFIG))(
@@ -206,13 +232,14 @@ describe('TokenService', () => {
       expect(jtis[0]).not.toBe(jtis[1]);
     });
 
-    it('stores only the sha256 hash of the refresh token, with its expiry and client, in the given transaction', async () => {
+    it('stores only the sha256 hash of the refresh token, with its family, expiry and client, in the given transaction', async () => {
       await service.issue(buildUser(), client, tx);
 
       expect(jwtService.decode).toHaveBeenCalledWith('refresh-token');
       expect(repository.create).toHaveBeenCalledWith(
         {
           tokenHash: sha256('refresh-token'),
+          familyId: expect.stringMatching(UUID_PATTERN),
           userId: 'user-1',
           expiresAt: new Date(REFRESH_EXP * 1000),
           userAgent: 'jest',
@@ -225,6 +252,22 @@ describe('TokenService', () => {
       );
     });
 
+    it('starts a new family on every call without a familyId', async () => {
+      await service.issue(buildUser(), client);
+      await service.issue(buildUser(), client);
+
+      const [first, second] = storedFamilyIds();
+      expect(first).toMatch(UUID_PATTERN);
+      expect(second).toMatch(UUID_PATTERN);
+      expect(first).not.toBe(second);
+    });
+
+    it('keeps the family it is given', async () => {
+      await service.issue(buildUser(), client, tx, 'family-1');
+
+      expect(storedFamilyIds()).toEqual(['family-1']);
+    });
+
     it('returns the raw token pair to the caller', async () => {
       await expect(service.issue(buildUser(), client, tx)).resolves.toEqual({
         accessToken: 'access-token',
@@ -234,6 +277,8 @@ describe('TokenService', () => {
   });
 
   describe('rotate', () => {
+    const rotate = () => service.rotate('old-refresh-token', client);
+
     beforeEach(() => {
       jwtService.verify.mockReturnValue({ sub: 'user-1', type: 'refresh' });
       repository.findByHash.mockResolvedValue(buildStoredToken());
@@ -241,8 +286,8 @@ describe('TokenService', () => {
       repository.revokeIfActive.mockResolvedValue(true);
     });
 
-    it('locks the user, re-reads it and swaps the old token for a new pair inside one transaction', async () => {
-      const result = await service.rotate('old-refresh-token', client);
+    it('locks the user, re-reads it and swaps the old token for a new one of the same family inside one transaction', async () => {
+      const result = await rotate();
 
       expect(jwtService.verify).toHaveBeenCalledWith('old-refresh-token', {
         secret: 'refresh-secret',
@@ -251,24 +296,22 @@ describe('TokenService', () => {
         sha256('old-refresh-token'),
       );
       expect(prisma.$transaction).toHaveBeenCalledTimes(1);
-      expect(usersService.lockForUpdate).toHaveBeenCalledWith('user-1', tx);
       expect(usersService.findById).toHaveBeenCalledWith('user-1', tx);
       expect(repository.revokeIfActive).toHaveBeenCalledWith('rt-1', tx);
       expect(repository.create).toHaveBeenCalledWith(
         expect.objectContaining({
           tokenHash: sha256('refresh-token'),
+          familyId: 'family-1',
           userId: 'user-1',
         }),
         tx,
       );
-      const lockedAt = usersService.lockForUpdate.mock.invocationCallOrder[0];
-      for (const next of [
+      expectLockedBefore(
         usersService.findById,
         repository.revokeIfActive,
         repository.create,
-      ]) {
-        expect(lockedAt).toBeLessThan(next.mock.invocationCallOrder[0]);
-      }
+      );
+      expect(repository.revokeFamily).not.toHaveBeenCalled();
       expect(result).toEqual({
         accessToken: 'access-token',
         refreshToken: 'refresh-token',
@@ -281,7 +324,7 @@ describe('TokenService', () => {
       });
 
       await expectHttpError(
-        service.rotate('old-refresh-token', client),
+        rotate(),
         UnauthorizedException,
         AuthErrorCode.INVALID_REFRESH_TOKEN,
       );
@@ -292,7 +335,7 @@ describe('TokenService', () => {
       jwtService.verify.mockReturnValue({ sub: 'user-1' });
 
       await expectHttpError(
-        service.rotate('old-refresh-token', client),
+        rotate(),
         UnauthorizedException,
         AuthErrorCode.INVALID_REFRESH_TOKEN,
       );
@@ -301,30 +344,111 @@ describe('TokenService', () => {
 
     it.each<[string, RefreshToken | null]>([
       ['the token is not stored', null],
-      ['the token was revoked', buildStoredToken({ isRevoked: true })],
+      [
+        'the token belongs to another user',
+        buildStoredToken({ userId: 'user-2', isRevoked: true }),
+      ],
       [
         'the token has expired',
         buildStoredToken({ expiresAt: new Date(NOW.getTime() - 1) }),
       ],
-      [
-        'the token belongs to another user',
-        buildStoredToken({ userId: 'user-2' }),
-      ],
     ])(
-      'returns 401 AUTH_INVALID_REFRESH_TOKEN when %s',
+      'returns 401 AUTH_INVALID_REFRESH_TOKEN without touching any session when %s',
       async (_case, stored) => {
         repository.findByHash.mockResolvedValue(stored);
 
         await expectHttpError(
-          service.rotate('old-refresh-token', client),
+          rotate(),
           UnauthorizedException,
           AuthErrorCode.INVALID_REFRESH_TOKEN,
         );
         expect(prisma.$transaction).not.toHaveBeenCalled();
         expect(usersService.lockForUpdate).not.toHaveBeenCalled();
+        expect(repository.revokeFamily).not.toHaveBeenCalled();
         expect(repository.create).not.toHaveBeenCalled();
       },
     );
+
+    describe('with a token that was already revoked', () => {
+      const presentRevoked = (revokedAt: Date | null) => {
+        repository.findByHash.mockResolvedValue(
+          buildStoredToken({ isRevoked: true, revokedAt }),
+        );
+        return rotate();
+      };
+
+      it.each([
+        ['just now', 0],
+        ['1 second ago', 1000],
+        ['exactly at the end of the grace window', REFRESH_REUSE_GRACE_MS],
+      ])(
+        'returns 401 without revoking anything when it was revoked %s (concurrent refresh)',
+        async (_case, revokedFor) => {
+          await expectHttpError(
+            presentRevoked(ago(revokedFor)),
+            UnauthorizedException,
+            AuthErrorCode.INVALID_REFRESH_TOKEN,
+          );
+          expect(prisma.$transaction).not.toHaveBeenCalled();
+          expect(repository.revokeFamily).not.toHaveBeenCalled();
+          expect(loggerWarn).not.toHaveBeenCalled();
+          expect(jwtService.sign).not.toHaveBeenCalled();
+        },
+      );
+
+      it.each([
+        ['1 ms after the grace window', REFRESH_REUSE_GRACE_MS + 1],
+        ['a day ago', DAY_MS],
+      ])(
+        'treats it as reuse when it was revoked %s: revokes the whole family under the user lock and returns 401',
+        async (_case, revokedFor) => {
+          repository.revokeFamily.mockResolvedValue(2);
+
+          await expectHttpError(
+            presentRevoked(ago(revokedFor)),
+            UnauthorizedException,
+            AuthErrorCode.INVALID_REFRESH_TOKEN,
+          );
+          expect(prisma.$transaction).toHaveBeenCalledTimes(1);
+          expect(repository.revokeFamily).toHaveBeenCalledWith('family-1', tx);
+          expectLockedBefore(repository.revokeFamily);
+          expect(repository.revokeIfActive).not.toHaveBeenCalled();
+          expect(jwtService.sign).not.toHaveBeenCalled();
+          expect(repository.create).not.toHaveBeenCalled();
+        },
+      );
+
+      it('treats a revoked token without a revocation time as reuse', async () => {
+        await expectHttpError(
+          presentRevoked(null),
+          UnauthorizedException,
+          AuthErrorCode.INVALID_REFRESH_TOKEN,
+        );
+        expect(repository.revokeFamily).toHaveBeenCalledWith('family-1', tx);
+      });
+
+      it('warns about the reuse when it revoked live tokens of the family', async () => {
+        repository.revokeFamily.mockResolvedValue(2);
+
+        await expect(presentRevoked(ago(DAY_MS))).rejects.toBeInstanceOf(
+          UnauthorizedException,
+        );
+        expect(loggerWarn).toHaveBeenCalledTimes(1);
+        expect(loggerWarn.mock.calls[0][0]).toContain('user-1');
+        expect(loggerWarn.mock.calls[0][0]).toContain('2 token(s)');
+        expect(loggerWarn.mock.calls[0][0]).not.toContain('old-refresh-token');
+      });
+
+      it('does not warn when the family had no live tokens left', async () => {
+        repository.revokeFamily.mockResolvedValue(0);
+
+        await expect(presentRevoked(ago(DAY_MS))).rejects.toBeInstanceOf(
+          UnauthorizedException,
+        );
+        expect(repository.revokeFamily).toHaveBeenCalledTimes(1);
+        expect(loggerWarn).not.toHaveBeenCalled();
+      });
+    });
 
     it.each<[string, PublicUser | null]>([
       ['the user no longer exists', null],
@@ -335,7 +459,7 @@ describe('TokenService', () => {
         usersService.findById.mockResolvedValue(user);
 
         await expectHttpError(
-          service.rotate('old-refresh-token', client),
+          rotate(),
           UnauthorizedException,
           AuthErrorCode.INVALID_REFRESH_TOKEN,
         );
@@ -353,7 +477,7 @@ describe('TokenService', () => {
       repository.revokeIfActive.mockResolvedValue(false);
 
       await expectHttpError(
-        service.rotate('old-refresh-token', client),
+        rotate(),
         UnauthorizedException,
         AuthErrorCode.INVALID_REFRESH_TOKEN,
       );
@@ -366,13 +490,38 @@ describe('TokenService', () => {
     });
   });
 
-  describe('revoke', () => {
-    it('revokes by the hash of the token, never the raw token', async () => {
+  describe('revoke (logout)', () => {
+    it('revokes the whole family of the token under the user lock, looking it up by hash only', async () => {
+      repository.findByHash.mockResolvedValue(buildStoredToken());
+      repository.revokeFamily.mockResolvedValue(1);
+
       await expect(service.revoke('refresh-token')).resolves.toBeUndefined();
 
-      expect(repository.revokeByHash).toHaveBeenCalledWith(
+      expect(repository.findByHash).toHaveBeenCalledWith(
         sha256('refresh-token'),
       );
+      expect(prisma.$transaction).toHaveBeenCalledTimes(1);
+      expect(repository.revokeFamily).toHaveBeenCalledWith('family-1', tx);
+      expectLockedBefore(repository.revokeFamily);
+      expect(loggerWarn).not.toHaveBeenCalled();
+    });
+
+    it('still ends the session when given a token that was already rotated', async () => {
+      repository.findByHash.mockResolvedValue(
+        buildStoredToken({ isRevoked: true, revokedAt: ago(DAY_MS) }),
+      );
+
+      await expect(service.revoke('refresh-token')).resolves.toBeUndefined();
+      expect(repository.revokeFamily).toHaveBeenCalledWith('family-1', tx);
+    });
+
+    it('does nothing for an unknown token', async () => {
+      repository.findByHash.mockResolvedValue(null);
+
+      await expect(service.revoke('unknown-token')).resolves.toBeUndefined();
+      expect(prisma.$transaction).not.toHaveBeenCalled();
+      expect(usersService.lockForUpdate).not.toHaveBeenCalled();
+      expect(repository.revokeFamily).not.toHaveBeenCalled();
     });
   });
 
@@ -390,9 +539,7 @@ describe('TokenService', () => {
       repository.deleteStale.mockResolvedValue(4);
 
       await expect(service.cleanup()).resolves.toBe(4);
-      expect(repository.deleteStale).toHaveBeenCalledWith(
-        new Date(NOW.getTime() - 30 * DAY_MS),
-      );
+      expect(repository.deleteStale).toHaveBeenCalledWith(ago(30 * DAY_MS));
     });
   });
 });

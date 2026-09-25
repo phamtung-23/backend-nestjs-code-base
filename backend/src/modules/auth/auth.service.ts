@@ -12,7 +12,10 @@ import { isPrismaError } from '../../common/helpers/prisma.helpers';
 import { ClientMeta } from '../../common/interfaces/client-meta.interface';
 import { PrismaService } from '../../prisma/prisma.service';
 import { MailService } from '../mail/mail.service';
-import { PublicUser } from '../users/interfaces/user.interface';
+import {
+  PublicUser,
+  UserWithPassword,
+} from '../users/interfaces/user.interface';
 import { UsersService } from '../users/users.service';
 import {
   AuthErrorCode,
@@ -25,6 +28,7 @@ import {
   OtpCodeDto,
   RegisterDto,
   ResetPasswordDto,
+  VerifyEmailDto,
 } from './dto/auth.dto';
 import { AuthSession, AuthTokens } from './interfaces/auth.interface';
 import { OtpService } from './otp.service';
@@ -95,18 +99,17 @@ export class AuthService {
   }
 
   async login(dto: LoginDto, client: ClientMeta): Promise<AuthSession> {
-    const record = await this.usersService.findWithPasswordByEmail(dto.email);
-    // Unknown emails are checked against a dummy hash so both cases take as long
-    const passwordMatches = await bcrypt.compare(
-      dto.password,
-      record?.password ?? DUMMY_PASSWORD_HASH,
-    );
-    if (!record || !passwordMatches) {
-      throw this.invalidCredentials();
-    }
-
+    const record = await this.checkCredentials(dto.email, dto.password);
     const { password: verifiedHash, ...user } = record;
-    this.assertActive(user);
+    // Checked only after the password matched, so it reveals nothing to
+    // strangers. It also stops someone who registered another person's email
+    // from using the account: they can never verify it.
+    if (!user.isEmailVerified) {
+      throw new ForbiddenException({
+        errorCode: AuthErrorCode.EMAIL_NOT_VERIFIED,
+        message: 'Verify your email address before logging in with a password',
+      });
+    }
 
     const session = await this.prisma.$transaction(async (tx) => {
       if (!(await this.usersService.lockForUpdate(user.id, tx))) {
@@ -126,9 +129,13 @@ export class AuthService {
     return session;
   }
 
-  async verifyEmail(dto: OtpCodeDto): Promise<void> {
-    const user = await this.usersService.findByEmail(dto.email);
-    if (!user || user.isEmailVerified) {
+  // Requires the password as well as the code: it proves the person verifying
+  // is the one who registered. Otherwise an email owner verifying an account
+  // someone else registered first would make that person's password usable;
+  // the owner takes such an account over with a password reset instead.
+  async verifyEmail(dto: VerifyEmailDto): Promise<void> {
+    const user = await this.checkCredentials(dto.email, dto.password);
+    if (user.isEmailVerified) {
       throw this.invalidCode();
     }
 
@@ -206,6 +213,10 @@ export class AuthService {
       );
       if (consumed) {
         await this.usersService.setPassword(user.id, passwordHash, tx);
+        // The code reached the mailbox, which proves ownership of the email
+        if (!user.isEmailVerified) {
+          await this.usersService.markEmailVerified(user.id, tx);
+        }
         // Whoever knew the old password is signed out everywhere
         await this.tokenService.revokeAllForUser(user.id, tx);
       }
@@ -266,6 +277,9 @@ export class AuthService {
     });
   }
 
+  // Works for unverified accounts too, but deliberately doesn't mark the email
+  // verified: that would make a password chosen by whoever registered the
+  // address first usable. Verification happens via verify-email or a reset.
   async verifyLoginOtp(
     dto: OtpCodeDto,
     client: ClientMeta,
@@ -325,6 +339,24 @@ export class AuthService {
         ? this.otpService.issue(userId, type, tx)
         : null,
     );
+  }
+
+  // Password check shared by login and verify-email. Unknown emails are
+  // compared against a dummy hash so both cases take as long and answer alike.
+  private async checkCredentials(
+    email: string,
+    password: string,
+  ): Promise<UserWithPassword> {
+    const record = await this.usersService.findWithPasswordByEmail(email);
+    const passwordMatches = await bcrypt.compare(
+      password,
+      record?.password ?? DUMMY_PASSWORD_HASH,
+    );
+    if (!record || !passwordMatches) {
+      throw this.invalidCredentials();
+    }
+    this.assertActive(record);
+    return record;
   }
 
   private assertActive(user: PublicUser): void {

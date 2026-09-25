@@ -7,8 +7,8 @@ A comprehensive **NestJS** authentication and user management system, ready to b
 ### Authentication & Security
 
 - ✅ **User Registration** with OTP email verification
-- ✅ **Login** with JWT dual-token authentication
-- ✅ **Refresh Token Mechanism** with rotation and revocation
+- ✅ **Login** with JWT dual-token authentication (password login requires a verified email)
+- ✅ **Refresh Token Mechanism** with rotation, revocation and reuse detection
 - ✅ **Password Management** (forgot password, reset password, change password)
 - ✅ **OTP Authentication** (separate OTP table for all verification needs)
 - ✅ **Multi-device Session Management** (logout from all devices)
@@ -175,6 +175,8 @@ Content-Type: application/json
 
 #### Login
 
+Requires a verified email (`403 AUTH_EMAIL_NOT_VERIFIED` otherwise); `verify-otp` logs in by code instead.
+
 ```http
 POST /api/v1/auth/login
 Content-Type: application/json
@@ -193,7 +195,8 @@ Content-Type: application/json
 
 {
   "email": "user@example.com",
-  "otpCode": "123456"
+  "otpCode": "123456",
+  "password": "Password@123"
 }
 ```
 

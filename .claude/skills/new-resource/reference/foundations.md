@@ -39,6 +39,4 @@ Implement each one following its rule, with tests, then update CLAUDE.md.
 | Audit log | `modules/audit/` (`AuditService.log(entry, tx?)`) + `AuditLog` model + migration | `.claude/rules/cross-cutting.md`. |
 | Idempotency | `common/decorators/idempotent.decorator.ts` + `common/interceptors/idempotency.interceptor.ts` (Redis via `CACHE_MANAGER` or a dedicated client with `SET NX`) | `.claude/rules/cross-cutting.md`. |
 | Redis throttler storage | `ThrottlerModule.forRootAsync` with a Redis storage adapter | needed before running more than one instance. |
-| OTP codes hashed | `OtpService` + migration + new `OTP_SECRET` env var | store `HMAC-SHA256(OTP_SECRET, code)`, compare with `timingSafeEqual`; plain SHA-256 of 6 digits is brute-forceable. |
-| Refresh token reuse detection | `TokenService.rotate` | reuse of an already-rotated token revokes the user's whole token family (mind legit concurrent refreshes from several tabs). |
 | e2e setup | `backend/test/jest-e2e.json`, `test/*.e2e-spec.ts` | `.claude/rules/testing.md`; bootstrap the app with `setupApp(app)` from `src/app.setup.ts` so tests match production wiring. |

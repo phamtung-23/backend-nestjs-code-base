@@ -42,6 +42,17 @@ function IsStrongPassword(example: string) {
   );
 }
 
+// A password the user already has (login, verify-email, current password): no
+// strength rules, so accounts created under older rules keep working
+function IsExistingPassword() {
+  return applyDecorators(
+    ApiProperty({ example: 'Passw0rd!', maxLength: PASSWORD_MAX_LENGTH }),
+    IsString(),
+    IsNotEmpty(),
+    MaxLength(PASSWORD_MAX_LENGTH),
+  );
+}
+
 export class EmailDto {
   @ApiProperty({ example: 'jane@example.com', maxLength: 254 })
   @Transform(normalizeEmail)
@@ -51,11 +62,7 @@ export class EmailDto {
 }
 
 export class LoginDto extends EmailDto {
-  // No strength rules here: accounts created under older rules must still log in
-  @ApiProperty({ example: 'Passw0rd!', maxLength: PASSWORD_MAX_LENGTH })
-  @IsString()
-  @IsNotEmpty()
-  @MaxLength(PASSWORD_MAX_LENGTH)
+  @IsExistingPassword()
   password: string;
 }
 
@@ -91,10 +98,7 @@ export class ResetPasswordDto extends OtpCodeDto {
 }
 
 export class ChangePasswordDto {
-  @ApiProperty({ example: 'Passw0rd!', maxLength: PASSWORD_MAX_LENGTH })
-  @IsString()
-  @IsNotEmpty()
-  @MaxLength(PASSWORD_MAX_LENGTH)
+  @IsExistingPassword()
   currentPassword: string;
 
   @IsStrongPassword('NewPassw0rd!')
@@ -113,6 +117,10 @@ export class RefreshTokenDto {
 export class ResendVerificationDto extends EmailDto {}
 export class ForgotPasswordDto extends EmailDto {}
 export class SendOtpDto extends EmailDto {}
-export class VerifyEmailDto extends OtpCodeDto {}
+// The password proves the verifier is the registrant (see AuthService.verifyEmail)
+export class VerifyEmailDto extends OtpCodeDto {
+  @IsExistingPassword()
+  password: string;
+}
 export class VerifyOtpDto extends OtpCodeDto {}
 export class LogoutDto extends RefreshTokenDto {}

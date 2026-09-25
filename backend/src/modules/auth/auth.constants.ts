@@ -2,6 +2,7 @@ export const AuthErrorCode = {
   EMAIL_TAKEN: 'AUTH_EMAIL_TAKEN',
   INVALID_CREDENTIALS: 'AUTH_INVALID_CREDENTIALS',
   ACCOUNT_DISABLED: 'AUTH_ACCOUNT_DISABLED',
+  EMAIL_NOT_VERIFIED: 'AUTH_EMAIL_NOT_VERIFIED',
   INVALID_CODE: 'AUTH_INVALID_CODE',
   INVALID_REFRESH_TOKEN: 'AUTH_INVALID_REFRESH_TOKEN',
   CURRENT_PASSWORD_INCORRECT: 'AUTH_CURRENT_PASSWORD_INCORRECT',
@@ -20,6 +21,10 @@ export const OTP_RESEND_COOLDOWN_MS = 60 * 1000;
 // Cleanup keeps used codes and revoked tokens around a while for investigation
 export const USED_OTP_RETENTION_MS = 24 * 60 * 60 * 1000;
 export const REVOKED_TOKEN_RETENTION_MS = 30 * 24 * 60 * 60 * 1000;
+// A rotated refresh token presented again within this window is treated as two
+// tabs refreshing at once (plain 401); later it counts as reuse of a copied
+// token and revokes the whole session family
+export const REFRESH_REUSE_GRACE_MS = 30 * 1000;
 
 export const PASSWORD_MIN_LENGTH = 8;
 // bcrypt ignores everything past 72 bytes

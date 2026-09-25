@@ -81,7 +81,8 @@ future e2e tests.
 | Response envelope (`ResponseInterceptor`, `ResponseHelper`) | ✅ (detects envelopes heuristically) | api-design |
 | URI versioning, `/health` (version-neutral, DB ping) | ✅ | api-design |
 | Global rate limit (`ThrottlerGuard`, in-memory storage) | ✅ (Redis storage ❌) | security |
-| Refresh tokens: separate secret, `jti`, SHA-256 hash at rest, atomic rotation, revoked on password change/reset | ✅ | security |
+| Refresh tokens: separate secret, `jti`, SHA-256 hash at rest, atomic rotation, families + reuse detection, revoked on password change/reset | ✅ | security |
+| Email verification required for password login | ✅ | security |
 | OTP attempt limit via conditional update | ✅ | security |
 | Error format with `errorCode` / `details` / `requestId`, Prisma error mapping, 5xx logging (`GlobalExceptionFilter`, `validationExceptionFactory`) | ✅ | errors |
 | List query helpers: `ListQueryDto`, `ProjectionQueryDto`, `parseSort` / `buildSelect` / `buildSearch` / `pageMeta` (`src/common/query`), DTO transform helpers | ✅ offset pagination (no module uses them yet); cursor helpers ❌ | api-design |
@@ -104,8 +105,6 @@ future e2e tests.
   directly instead of a port.
 - `ResponseInterceptor` treats any object with `status` and `message` keys as an envelope; return data through
   `ResponseHelper` or DTOs that don't have both keys.
-- Email verification isn't required to log in; enforce it in `AuthService.login` if a project needs it (see "Known
-  gaps" in `backend/documents/AUTHENTICATION.md`).
 - `refresh_tokens.token` (plaintext, nullable, unused) is the pending contract step of the expand/contract migration
   `20260925000000_hash_refresh_tokens`: once no deployment can roll back past it, add a migration that drops `token`
   and makes `tokenHash` required.

@@ -24,6 +24,11 @@ paths:
 - `JwtStrategy` re-reads the user on every request and rejects missing or inactive accounts. Password change/reset
   revokes all of the user's refresh tokens (`TokenService.revokeAllForUser`), in the same transaction as the
   password write.
+- Password login requires `isEmailVerified` (403 `AUTH_EMAIL_NOT_VERIFIED`); `verify-email` requires the password as
+  well as the code; a successful reset verifies the email; OTP login must never mark it verified. Together these
+  are the squatting protection — keep all four (see `AuthService.verifyEmail` / `verifyLoginOtp`).
+- Refresh tokens belong to a family (one per login); logout revokes the family, and reuse of a rotated token after
+  `REFRESH_REUSE_GRACE_MS` revokes it too (`TokenService.handleReuse`).
 - Passwords: bcryptjs async API with cost ≥ 10. Select the `password` column only in credential-check queries;
   never log or return it.
 - OTP: `OtpService` — `crypto.randomInt`, `OTP_EXPIRY_MINUTES`, single use, scoped by type, attempt limit via

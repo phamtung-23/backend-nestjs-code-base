@@ -302,14 +302,13 @@ describe('AuthService', () => {
 
   describe('login', () => {
     const dto = { email: 'jane@example.com', password: 'Passw0rd!' };
+    // Password login requires a verified email
+    const verifiedRecord = (overrides: Partial<UserWithPassword> = {}) =>
+      buildUserWithPassword({ isEmailVerified: true, ...overrides });
 
     beforeEach(() => {
-      usersService.findWithPasswordByEmail.mockResolvedValue(
-        buildUserWithPassword(),
-      );
-      usersService.findWithPasswordById.mockResolvedValue(
-        buildUserWithPassword(),
-      );
+      usersService.findWithPasswordByEmail.mockResolvedValue(verifiedRecord());
+      usersService.findWithPasswordById.mockResolvedValue(verifiedRecord());
       (mockedBcrypt.compare as jest.Mock).mockResolvedValue(true);
     });
 
@@ -387,7 +386,7 @@ describe('AuthService', () => {
 
     it('returns 403 AUTH_ACCOUNT_DISABLED for a disabled account with the right password', async () => {
       usersService.findWithPasswordByEmail.mockResolvedValue(
-        buildUserWithPassword({ isActive: false }),
+        verifiedRecord({ isActive: false }),
       );
 
       await expectHttpError(
@@ -399,12 +398,49 @@ describe('AuthService', () => {
       expect(tokenService.issue).not.toHaveBeenCalled();
     });
 
+    it('returns 403 AUTH_EMAIL_NOT_VERIFIED for an unverified account with the right password, without a session', async () => {
+      usersService.findWithPasswordByEmail.mockResolvedValue(
+        buildUserWithPassword({ isEmailVerified: false }),
+      );
+
+      await expectHttpError(
+        service.login(dto, client),
+        ForbiddenException,
+        AuthErrorCode.EMAIL_NOT_VERIFIED,
+      );
+      expect(prisma.$transaction).not.toHaveBeenCalled();
+      expect(usersService.recordLogin).not.toHaveBeenCalled();
+      expect(tokenService.issue).not.toHaveBeenCalled();
+    });
+
+    it('reports a disabled account before an unverified email', async () => {
+      usersService.findWithPasswordByEmail.mockResolvedValue(
+        buildUserWithPassword({ isActive: false, isEmailVerified: false }),
+      );
+
+      await expectHttpError(
+        service.login(dto, client),
+        ForbiddenException,
+        AuthErrorCode.ACCOUNT_DISABLED,
+      );
+    });
+
+    it('checks the password before revealing that the email is unverified', async () => {
+      usersService.findWithPasswordByEmail.mockResolvedValue(
+        buildUserWithPassword({ isEmailVerified: false }),
+      );
+      (mockedBcrypt.compare as jest.Mock).mockResolvedValue(false);
+
+      await expectHttpError(
+        service.login(dto, client),
+        UnauthorizedException,
+        AuthErrorCode.INVALID_CREDENTIALS,
+      );
+    });
+
     it.each<[string, UserWithPassword | null]>([
-      [
-        'the password was changed',
-        buildUserWithPassword({ password: 'newer-hash' }),
-      ],
-      ['the account was disabled', buildUserWithPassword({ isActive: false })],
+      ['the password was changed', verifiedRecord({ password: 'newer-hash' })],
+      ['the account was disabled', verifiedRecord({ isActive: false })],
       ['the account was deleted', null],
     ])(
       'returns 401 AUTH_INVALID_CREDENTIALS without a session when %s while bcrypt was running',
@@ -424,13 +460,27 @@ describe('AuthService', () => {
   });
 
   describe('verifyEmail', () => {
-    const dto = { email: 'jane@example.com', otpCode: '123456' };
+    const dto = {
+      email: 'jane@example.com',
+      otpCode: '123456',
+      password: 'Passw0rd!',
+    };
 
-    it('marks the email verified when the code is consumed', async () => {
-      usersService.findByEmail.mockResolvedValue(buildUser());
+    beforeEach(() => {
+      usersService.findWithPasswordByEmail.mockResolvedValue(
+        buildUserWithPassword(),
+      );
+      (mockedBcrypt.compare as jest.Mock).mockResolvedValue(true);
+    });
+
+    it('checks the password, then marks the email verified when the code is consumed', async () => {
       otpService.consume.mockResolvedValue(true);
 
       await expect(service.verifyEmail(dto)).resolves.toBeUndefined();
+      expect(mockedBcrypt.compare).toHaveBeenCalledWith(
+        'Passw0rd!',
+        'stored-hash',
+      );
       expect(otpService.consume).toHaveBeenCalledWith(
         'user-1',
         OtpType.VERIFICATION,
@@ -440,20 +490,51 @@ describe('AuthService', () => {
       expect(usersService.markEmailVerified).toHaveBeenCalledWith('user-1', tx);
     });
 
-    it('returns 422 AUTH_INVALID_CODE for an unknown email', async () => {
-      usersService.findByEmail.mockResolvedValue(null);
+    it('returns 401 AUTH_INVALID_CREDENTIALS for a wrong password without touching the code', async () => {
+      (mockedBcrypt.compare as jest.Mock).mockResolvedValue(false);
 
       await expectHttpError(
         service.verifyEmail(dto),
-        UnprocessableEntityException,
-        AuthErrorCode.INVALID_CODE,
+        UnauthorizedException,
+        AuthErrorCode.INVALID_CREDENTIALS,
+      );
+      // A guessed password must not burn the code's attempts either
+      expect(otpService.consume).not.toHaveBeenCalled();
+      expect(prisma.$transaction).not.toHaveBeenCalled();
+    });
+
+    it('answers an unknown email exactly like a wrong password, after a dummy bcrypt compare', async () => {
+      usersService.findWithPasswordByEmail.mockResolvedValue(null);
+      (mockedBcrypt.compare as jest.Mock).mockResolvedValue(false);
+
+      await expectHttpError(
+        service.verifyEmail(dto),
+        UnauthorizedException,
+        AuthErrorCode.INVALID_CREDENTIALS,
+      );
+      expect(mockedBcrypt.compare).toHaveBeenCalledWith(
+        'Passw0rd!',
+        DUMMY_PASSWORD_HASH,
+      );
+      expect(otpService.consume).not.toHaveBeenCalled();
+    });
+
+    it('returns 403 AUTH_ACCOUNT_DISABLED for a disabled account with the right password', async () => {
+      usersService.findWithPasswordByEmail.mockResolvedValue(
+        buildUserWithPassword({ isActive: false }),
+      );
+
+      await expectHttpError(
+        service.verifyEmail(dto),
+        ForbiddenException,
+        AuthErrorCode.ACCOUNT_DISABLED,
       );
       expect(otpService.consume).not.toHaveBeenCalled();
     });
 
     it('returns 422 AUTH_INVALID_CODE when the email is already verified', async () => {
-      usersService.findByEmail.mockResolvedValue(
-        buildUser({ isEmailVerified: true }),
+      usersService.findWithPasswordByEmail.mockResolvedValue(
+        buildUserWithPassword({ isEmailVerified: true }),
       );
 
       await expectHttpError(
@@ -465,7 +546,6 @@ describe('AuthService', () => {
     });
 
     it('returns 422 AUTH_INVALID_CODE for a wrong code and commits the attempt instead of rolling it back', async () => {
-      usersService.findByEmail.mockResolvedValue(buildUser());
       otpService.consume.mockResolvedValue(false);
 
       await expectHttpError(
@@ -644,6 +724,32 @@ describe('AuthService', () => {
       );
     });
 
+    it('marks an unverified email verified in the same transaction, since the code reached the mailbox', async () => {
+      usersService.findByEmail.mockResolvedValue(
+        buildUser({ isEmailVerified: false }),
+      );
+      otpService.consume.mockResolvedValue(true);
+
+      await expect(service.resetPassword(dto)).resolves.toBeUndefined();
+      expect(usersService.markEmailVerified).toHaveBeenCalledWith('user-1', tx);
+      expectLockedBefore(usersService.markEmailVerified);
+    });
+
+    it('does not mark an already verified email again', async () => {
+      usersService.findByEmail.mockResolvedValue(
+        buildUser({ isEmailVerified: true }),
+      );
+      otpService.consume.mockResolvedValue(true);
+
+      await expect(service.resetPassword(dto)).resolves.toBeUndefined();
+      expect(usersService.setPassword).toHaveBeenCalledWith(
+        'user-1',
+        'new-hash',
+        tx,
+      );
+      expect(usersService.markEmailVerified).not.toHaveBeenCalled();
+    });
+
     it('hashes the new password even for an unknown email, then returns 422 AUTH_INVALID_CODE', async () => {
       usersService.findByEmail.mockResolvedValue(null);
 
@@ -684,6 +790,7 @@ describe('AuthService', () => {
         AuthErrorCode.INVALID_CODE,
       );
       expect(usersService.setPassword).not.toHaveBeenCalled();
+      expect(usersService.markEmailVerified).not.toHaveBeenCalled();
       expect(tokenService.revokeAllForUser).not.toHaveBeenCalled();
       await expect(transactionResult()).resolves.toBe(false);
     });
@@ -852,6 +959,18 @@ describe('AuthService', () => {
       );
       expect(session).toEqual({ ...tokens, user: updated });
       expect(session.user).not.toHaveProperty('password');
+    });
+
+    it('logs an unverified account in without marking its email verified', async () => {
+      const unverified = buildUser({ isEmailVerified: false });
+      usersService.findByEmail.mockResolvedValue(unverified);
+      otpService.consume.mockResolvedValue(true);
+      usersService.recordLogin.mockResolvedValue(unverified);
+
+      const session = await service.verifyLoginOtp(dto, client);
+
+      expect(session.user.isEmailVerified).toBe(false);
+      expect(usersService.markEmailVerified).not.toHaveBeenCalled();
     });
 
     it('returns 422 AUTH_INVALID_CODE for an unknown email', async () => {

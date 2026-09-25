@@ -13,6 +13,7 @@ export class RefreshTokenRepository {
   create(
     data: {
       tokenHash: string;
+      familyId: string;
       userId: string;
       expiresAt: Date;
       userAgent?: string;
@@ -38,19 +39,20 @@ export class RefreshTokenRepository {
   ): Promise<boolean> {
     const { count } = await this.db(tx).refreshToken.updateMany({
       where: { id, isRevoked: false },
-      data: { isRevoked: true },
+      data: { isRevoked: true, revokedAt: new Date() },
     });
     return count === 1;
   }
 
-  async revokeByHash(
-    tokenHash: string,
+  async revokeFamily(
+    familyId: string,
     tx?: Prisma.TransactionClient,
-  ): Promise<void> {
-    await this.db(tx).refreshToken.updateMany({
-      where: { tokenHash, isRevoked: false },
-      data: { isRevoked: true },
+  ): Promise<number> {
+    const { count } = await this.db(tx).refreshToken.updateMany({
+      where: { familyId, isRevoked: false },
+      data: { isRevoked: true, revokedAt: new Date() },
     });
+    return count;
   }
 
   async revokeAllForUser(
@@ -59,7 +61,7 @@ export class RefreshTokenRepository {
   ): Promise<number> {
     const { count } = await this.db(tx).refreshToken.updateMany({
       where: { userId, isRevoked: false },
-      data: { isRevoked: true },
+      data: { isRevoked: true, revokedAt: new Date() },
     });
     return count;
   }

@@ -33,6 +33,7 @@ describe('RefreshTokenRepository', () => {
   describe('create', () => {
     const data = {
       tokenHash: 'a'.repeat(64),
+      familyId: 'family-1',
       userId: 'user-1',
       expiresAt: new Date(NOW.getTime() + 86_400_000),
       userAgent: 'jest',
@@ -83,7 +84,7 @@ describe('RefreshTokenRepository', () => {
 
       expect(tx.refreshToken.updateMany).toHaveBeenCalledWith({
         where: { id: 'rt-1', isRevoked: false },
-        data: { isRevoked: true },
+        data: { isRevoked: true, revokedAt: NOW },
       });
     });
 
@@ -94,24 +95,24 @@ describe('RefreshTokenRepository', () => {
     });
   });
 
-  describe('revokeByHash', () => {
-    it('revokes the matching active token', async () => {
-      await expect(repository.revokeByHash('hash')).resolves.toBeUndefined();
+  describe('revokeFamily', () => {
+    it('revokes every active token of the family, records when, and returns the count', async () => {
+      tx.refreshToken.updateMany.mockResolvedValue({ count: 3 });
 
-      expect(prisma.refreshToken.updateMany).toHaveBeenCalledWith({
-        where: { tokenHash: 'hash', isRevoked: false },
-        data: { isRevoked: true },
-      });
-    });
-
-    it('revokes within the given transaction', async () => {
-      await repository.revokeByHash('hash', asTx());
-
+      await expect(repository.revokeFamily('family-1', asTx())).resolves.toBe(
+        3,
+      );
       expect(tx.refreshToken.updateMany).toHaveBeenCalledWith({
-        where: { tokenHash: 'hash', isRevoked: false },
-        data: { isRevoked: true },
+        where: { familyId: 'family-1', isRevoked: false },
+        data: { isRevoked: true, revokedAt: NOW },
       });
       expect(prisma.refreshToken.updateMany).not.toHaveBeenCalled();
+    });
+
+    it('returns 0 when the family has no active tokens, outside a transaction too', async () => {
+      prisma.refreshToken.updateMany.mockResolvedValue({ count: 0 });
+
+      await expect(repository.revokeFamily('family-1')).resolves.toBe(0);
     });
   });
 
@@ -124,7 +125,7 @@ describe('RefreshTokenRepository', () => {
       );
       expect(tx.refreshToken.updateMany).toHaveBeenCalledWith({
         where: { userId: 'user-1', isRevoked: false },
-        data: { isRevoked: true },
+        data: { isRevoked: true, revokedAt: NOW },
       });
     });
   });
